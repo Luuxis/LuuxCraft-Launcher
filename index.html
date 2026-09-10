@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr" class="dark theme-dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#22c55e" />
+    <title>LuuxCraft Launcher</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("theme") || "dark";
+          var e =
+            t === "system"
+              ? window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : t;
+          if (e !== "dark" && e !== "light") e = "dark";
+          var c = document.documentElement.classList;
+          c.remove("dark", "light", "theme-dark", "theme-light");
+          c.add(e, "theme-" + e);
+        } catch (_) {
+          document.documentElement.classList.add("dark", "theme-dark");
+        }
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </head>
+  <body class="root">
+    <div id="root"></div>
+  </body>
+</html>

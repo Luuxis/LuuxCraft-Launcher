@@ -1,0 +1,51 @@
+{
+  "userId": "bb8f5247-1d38-41bb-ab6d-3200471a06b2",
+  "api": {
+    "baseUrl": "https://luuxcraft.fr/api",
+    "timeoutSeconds": 15
+  },
+  "brand": {
+    "name": "LuuxCraft",
+    "wordmark": { "prefix": "Luux", "suffix": "Craft" },
+    "subtitle": "Launcher",
+    "website": "https://luuxcraft.fr"
+  },
+  "dataDirectory": "luuxcraft",
+  "updater": {
+    "endpoints": []
+  },
+  "auth": {
+    "yggdrasilServer": null
+  },
+  "news": {
+    "limit": 12
+  },
+  "serverStatus": {
+    "refreshSeconds": 30,
+    "timeoutMs": 3000
+  },
+  "downloads": {
+    "defaultConcurrency": 10,
+    "maxConcurrency": 30
+  },
+  "memory": {
+    "defaultMinMb": 1024,
+    "defaultMaxMb": 4096
+  },
+  "gameWindow": {
+    "defaultWidth": 1280,
+    "defaultHeight": 720
+  },
+  "links": [
+    { "label": "Site web", "url": "https://luuxcraft.fr", "icon": "website" }
+  ],
+  "modules": {
+    "news": true,
+    "skins": true,
+    "links": true,
+    "serverStatus": true,
+    "instances": true,
+    "accounts": true,
+    "settings": true
+  }
+}
