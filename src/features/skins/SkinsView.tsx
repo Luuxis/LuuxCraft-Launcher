@@ -16,10 +16,10 @@ export function SkinsView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<AppError | null>(null);
 
-  const [animation, setAnimation] = useState<AnimationName>("idle");
+  const [animation, setAnimation] = useState<AnimationName>("walk");
   const [model, setModel] = useState<ModelName>("auto");
-  const [autoRotate, setAutoRotate] = useState(true);
-  const [zoom, setZoom] = useState(0.9);
+  const [autoRotate, setAutoRotate] = useState(false);
+  const [zoom, setZoom] = useState(0.65);
   const [elytra, setElytra] = useState(false);
   const [resetToken, setResetToken] = useState(0);
 
@@ -115,7 +115,6 @@ export function SkinsView() {
                   autoRotate={autoRotate}
                   zoom={zoom}
                   elytra={elytra}
-                  nameTag={account.name}
                   resetToken={resetToken}
                 />
               )}

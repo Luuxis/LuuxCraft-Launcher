@@ -18,6 +18,8 @@ import { defaultSkinCanvas } from "../../lib/defaultSkin";
 export type AnimationName = "none" | "idle" | "walk" | "run" | "wave" | "fly";
 export type ModelName = "auto" | "default" | "slim";
 
+const DEFAULT_POSE_Y = 0.45;
+
 interface SkinViewer3DProps {
   skin: string | null;
   cape: string | null;
@@ -26,7 +28,6 @@ interface SkinViewer3DProps {
   autoRotate: boolean;
   zoom: number;
   elytra: boolean;
-  nameTag?: string | null;
   className?: string;
   /** Increment to recentre the camera. */
   resetToken?: number;
@@ -49,7 +50,7 @@ function makeAnimation(name: AnimationName): PlayerAnimation | null {
   }
 }
 
-export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, elytra, nameTag, className = "", resetToken = 0 }: SkinViewer3DProps) {
+export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, elytra, className = "", resetToken = 0 }: SkinViewer3DProps) {
   const container = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewer = useRef<SkinViewer | null>(null);
@@ -64,7 +65,7 @@ export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, e
       width: box.clientWidth || 320,
       height: box.clientHeight || 420,
       fov: 50,
-      zoom: 0.9,
+      zoom: 0.65,
       enableControls: true,
     });
     instance.controls.enablePan = true;
@@ -72,7 +73,8 @@ export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, e
     instance.controls.enableRotate = true;
     instance.globalLight.intensity = 3;
     instance.cameraLight.intensity = 0.6;
-    instance.autoRotateSpeed = 0.6;
+    instance.autoRotateSpeed = 0.3;
+    instance.playerWrapper.rotation.y = DEFAULT_POSE_Y;
     viewer.current = instance;
 
     const observer = new ResizeObserver(() => {
@@ -129,16 +131,12 @@ export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, e
     instance.zoom = zoom;
   }, [zoom]);
 
-  useEffect(() => {
-    const instance = viewer.current;
-    if (!instance) return;
-    instance.nameTag = nameTag ?? null;
-  }, [nameTag]);
-
+  // "Recentrer" puts back both the camera and the default three-quarter pose.
   useEffect(() => {
     const instance = viewer.current;
     if (!instance || resetToken === 0) return;
     instance.resetCameraPose();
+    instance.playerWrapper.rotation.y = DEFAULT_POSE_Y;
   }, [resetToken]);
 
   return (
