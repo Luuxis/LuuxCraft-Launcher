@@ -21,8 +21,13 @@ export function TitleBar({ subtitle }: { subtitle?: string }) {
       }}
     >
       <div data-tauri-drag-region className="flex items-center gap-2 min-w-0 pointer-events-none">
-        <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 icon-chip" style={{ borderRadius: 6 }}>
-          <Icon name="rocket_launch" size={14} />
+        {/* Logo du client quand le panel en publie un, la marque compilée sinon. */}
+        <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 icon-chip overflow-hidden" style={{ borderRadius: 6 }}>
+          {brand.iconUrl ? (
+            <img src={brand.iconUrl} alt="" className="w-full h-full object-contain" draggable={false} />
+          ) : (
+            <Icon name="rocket_launch" size={14} />
+          )}
         </span>
         <span className="text-sm font-bold tracking-tight leading-none" style={{ color: "var(--text-primary)" }}>
           {brand.wordmark.prefix}

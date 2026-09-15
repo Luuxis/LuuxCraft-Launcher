@@ -14,6 +14,12 @@ export interface Brand {
   wordmark: { prefix: string; suffix: string };
   subtitle: string;
   website: string | null;
+  /**
+   * Client logo, painted in the title bar in place of the built-in mark. The
+   * backend applies the same image to the window and taskbar icon, so the
+   * whole launcher carries the client's identity without a dedicated build.
+   */
+  iconUrl: string | null;
 }
 
 export const builtInBrand: Brand = {
@@ -21,6 +27,7 @@ export const builtInBrand: Brand = {
   wordmark: { prefix: "Luux", suffix: "Craft" },
   subtitle: "Launcher",
   website: "https://luuxcraft.fr",
+  iconUrl: null,
 };
 
 /** Merges what the panel publishes over the built-in identity. */
@@ -36,5 +43,6 @@ export function resolveBrand(remote: RemoteBrand | null | undefined): Brand {
     wordmark: { prefix, suffix },
     subtitle: remote.subtitle ?? builtInBrand.subtitle,
     website: remote.website ?? builtInBrand.website,
+    iconUrl: remote.iconUrl ?? builtInBrand.iconUrl,
   };
 }

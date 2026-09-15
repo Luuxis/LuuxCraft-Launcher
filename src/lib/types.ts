@@ -116,6 +116,8 @@ export interface RemoteBrand {
   suffix: string | null;
   subtitle: string | null;
   website: string | null;
+  /** Client logo; the backend also makes it the window and taskbar icon. */
+  iconUrl: string | null;
 }
 
 export interface RemoteConfig {

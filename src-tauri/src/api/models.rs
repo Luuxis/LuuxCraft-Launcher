@@ -45,6 +45,10 @@ pub struct RemoteBrand {
     pub suffix: Option<String>,
     pub subtitle: Option<String>,
     pub website: Option<String>,
+    /// Logo du client. Le launcher en fait l'icône de sa fenêtre et de la barre
+    /// des tâches à chaud — c'est ce qui donne le bon logo sans compiler un
+    /// launcher par client.
+    pub icon_url: Option<String>,
 }
 
 /// How players sign in, decided by the panel's `online` field:
@@ -322,6 +326,8 @@ impl RemoteBrand {
             suffix: pick_string(wordmark, &["suffix"]),
             subtitle: pick_string(brand, &["subtitle", "tagline"]),
             website: pick_string(brand, &["website", "url", "site"]),
+            icon_url: pick_string(brand, &["iconUrl", "icon_url", "icon", "logo"])
+                .filter(|url| url.starts_with("https://") || url.starts_with("http://")),
         };
         (parsed != Self::default()).then_some(parsed)
     }

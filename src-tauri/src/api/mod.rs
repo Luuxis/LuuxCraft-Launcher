@@ -135,9 +135,28 @@ pub async fn ensure_snapshot(state: &AppState) -> AppResult<RemoteSnapshot> {
     fetch_snapshot(state).await
 }
 
+/// Le seul point d'entrée par lequel l'interface rafraîchit la configuration,
+/// donc le bon endroit pour reposer l'identité du client sur la fenêtre : un
+/// changement de nom ou de logo côté panel se voit au rechargement suivant,
+/// sans redémarrage.
+///
+/// Détaché, et pas attendu : le logo se télécharge, et faire patienter
+/// l'interface derrière une image serait payer une identité visuelle au prix du
+/// démarrage. Le titre, lui, est posé tout de suite par `refresh`.
 #[tauri::command]
-pub async fn remote_fetch(state: State<'_, AppState>) -> AppResult<RemoteSnapshot> {
-    fetch_snapshot(&state).await
+pub async fn remote_fetch(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<RemoteSnapshot> {
+    let snapshot = fetch_snapshot(&state).await?;
+    let branding = crate::branding::refresh(
+        app,
+        state.http.inner().clone(),
+        state.paths.launcher_dir.clone(),
+        snapshot.config.brand.clone(),
+    );
+    tauri::async_runtime::spawn(branding);
+    Ok(snapshot)
 }
 
 #[tauri::command]

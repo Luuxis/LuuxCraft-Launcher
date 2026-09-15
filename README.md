@@ -54,12 +54,14 @@ octets du fichier, jamais dans son nom.
    portable, qui *sont* le fichier téléchargé ;
 2. **`provisioning.blob` à côté de l'exécutable** — écrit par `src-tauri/installer-hooks.nsh`,
    le hook NSIS qui relit son propre bloc au moment d'installer ;
-3. **`provisioning.json` à côté du bundle `.app`** (macOS) — posé par le zip que le panel
-   reconstruit à partir du `.app.tar.gz`, **jamais dans `Contents/`** ;
-4. **`provisioning.json` du dossier de données** — la copie persistée, qui survit aux mises à
-   jour (l'installeur téléchargé par l'updater, lui, n'a ni bloc ni fichier voisin) ;
-5. **`LUUXCRAFT_USER_ID` compilé**, pour un build dédié ;
-6. sinon, l'interface demande son code au joueur une seule fois
+3. **`Contents/Resources/provisioning.json`** (macOS) — posé *dans* le bundle par le zip que le
+   panel reconstruit à partir du `.app.tar.gz` ;
+4. **`provisioning.json` à côté du bundle `.app`** (macOS) — l'emplacement des premiers zips du
+   panel, gardé pour ceux déjà téléchargés ;
+5. **`provisioning.json` du dossier de données** — la copie persistée, qui survit aux mises à
+   jour (le bundle téléchargé par l'updater, lui, n'a ni bloc ni fichier de configuration) ;
+6. **`LUUXCRAFT_USER_ID` compilé**, pour un build dédié ;
+7. sinon, l'interface demande son code au joueur une seule fois
    (`src/features/provisioning/PairingView.tsx`) — le cas du `.dmg` traditionnel.
 
 Les sources fraîches passent avant la copie persistée : réinstaller avec l'installeur d'un autre
@@ -67,22 +69,26 @@ serveur doit changer de serveur. Le sixième cas ne sert qu'aux formats qui ne t
 ajouté à la fin ni fichier voisin injectable — le `.dmg` a son trailer `koly` collé à la fin, un
 `.deb` porte des sommes de contrôle.
 
-### macOS : zip préconfiguré plutôt qu'un code à saisir
+### macOS : un bundle déjà configuré, à glisser dans Applications
 
-Un `.app` est une arborescence de fichiers, pas un binaire avec une « fin » où ajouter un bloc —
-et `codesign` scelle le hash de chaque fichier du bundle dans sa signature : y ajouter quoi que
-ce soit **dans** `Contents/` après coup la casse (Gatekeeper refuse de lancer l'app, « endommagée
-»). Reconstruire la signature demanderait le certificat développeur Apple et un aller-retour de
-notarisation, hors de portée d'un Worker.
+Un `.app` est une arborescence de fichiers, pas un binaire avec une « fin » où ajouter un bloc.
+Au téléchargement, le panel reconstruit donc un zip à partir du `.app.tar.gz` déjà produit pour
+l'updater (`lib/provisioning.ts` → `createProvisionedMacAppZipStream`, via les writers
+`lib/tar.ts` / `lib/zip.ts` déjà utilisés pour les sauvegardes), et pose la configuration du
+client dans `Contents/Resources/provisioning.json`. Elle voyage ainsi **avec** le bundle : le
+joueur n'a rien d'autre à faire que le glisser dans Applications.
 
-La solution retenue ne touche donc jamais au bundle : au téléchargement, le panel reconstruit un
-zip à partir du `.app.tar.gz` déjà produit pour l'updater (`lib/provisioning.ts` →
-`createProvisionedMacZipStream`, via les writers `lib/tar.ts` / `lib/zip.ts` déjà utilisés pour
-les sauvegardes) — chaque fichier du bundle est recopié tel quel (mêmes octets, même hash), et un
-seul fichier neuf, `provisioning.json`, est ajouté **à côté** de `<App>.app` dans le zip. Au
-premier lancement, `provisioning.rs` retrouve ce fichier en remontant de trois niveaux depuis
-l'exécutable (`<bundle>.app/Contents/MacOS/<binaire>` → le dossier qui contient aussi
-`<bundle>.app`, la racine d'extraction du zip).
+Écrire dans `Contents/` n'est possible que parce que le bundle n'est pas signé. `codesign` scelle
+le hash de chaque fichier du bundle dans `Contents/_CodeSignature/CodeResources`, et modifier un
+bundle scellé le rend « endommagé » aux yeux de Gatekeeper — mais ce sceau n'existe que si une
+identité de signature Apple a été fournie au build, ce qui n'est pas le cas ici. La signature
+ad-hoc que le linker pose sur le binaire arm64, elle, ne couvre que le Mach-O, auquel on ne
+touche pas. **Le jour où la CI signera vraiment**, le panel refuse de personnaliser le bundle
+(erreur explicite plutôt qu'une application morte chez le joueur) et il faudra re-signer après
+modification — ce qu'un Worker ne peut pas faire.
+
+Les permissions Unix sont reportées du tar vers le zip (`mode` des entrées) : sans elles,
+`Contents/MacOS/<binaire>` ressort non exécutable et macOS refuse d'ouvrir l'application.
 
 Le `.dmg` traditionnel reste servi en repli (`?format=dmg`), pour qui préfère l'installeur
 classique au prix du code à saisir une fois.
@@ -93,11 +99,49 @@ réécrire peut de toute façon réécrire l'exécutable entier. La seule garant
 d'une `apiUrl` qui n'est pas en https.
 
 Le format est décrit une fois, dans `src/lib/provisioning.ts` du panel, et relu à l'identique
-par `provisioning.rs` et par le hook NSIS. Trois contraintes l'expliquent : taille fixe (NSIS se
-place à `-512` de la fin sans connaître la longueur), ASCII imprimable sans retour à la ligne
-(`FileRead` s'arrête au premier `\n`, et la conversion ANSI → UTF-16 d'un installeur Unicode
-est l'identité sur 0x20–0x7E), et 512 octets et non 1024 (`NSIS_MAX_STRLEN` vaut 1024).
-Changer l'un des trois oblige à changer les trois.
+par `provisioning.rs` et par le hook NSIS. Il tient sur deux lignes de 512 octets au total :
+
+```
+LUUXCRAFT-PROVISIONING-V1<base64url du JSON>\n   lu par le launcher
+LUUXCRAFT-BRAND-V1|<nom>|<url de l'icône>|\n     lu par le hook NSIS
+```
+
+Trois contraintes l'expliquent : taille fixe (NSIS se place à `-512` de la fin sans connaître la
+longueur), ASCII imprimable (la conversion ANSI → UTF-16 d'un installeur Unicode est l'identité
+sur 0x20–0x7E), et 512 octets et non 1024 (`NSIS_MAX_STRLEN` vaut 1024, et c'est la borne d'*une*
+chaîne — d'où le découpage en lignes, `FileRead` s'arrêtant à chaque `\n`). Changer l'un des
+trois oblige à changer les trois implémentations.
+
+## Nom et logo du client
+
+Le launcher étant compilé une fois pour tous, son identité visuelle ne vient pas du build mais du
+client : `launcherConfigs.name` et l'icône téléversée dans le dashboard. Elle est appliquée à
+quatre moments.
+
+| Où | Quoi | Par qui |
+| --- | --- | --- |
+| Téléchargement | nom du fichier (`Mon Serveur-1.2.0-Setup.exe`) | panel, `clientDownloadFilename` |
+| Installation Windows | raccourci du menu Démarrer, icône, entrée « Applications et fonctionnalités » | `installer-hooks.nsh` |
+| Installation macOS | nom du `.app`, `CFBundleName`/`CFBundleDisplayName`, `Resources/*.icns` | panel, `createProvisionedMacAppZipStream` |
+| Exécution | titre de fenêtre, icône de la barre des tâches, logo de la barre de titre | `src-tauri/src/branding.rs` + `src/config/brand.ts` |
+
+L'icône n'est reprise que si elle est stockée en **PNG** : `.ico` et `.icns` savent embarquer un
+PNG tel quel — c'est ce qui rend la conversion possible dans un Worker, sans décodeur d'image —
+mais rien ne peut transcoder un JPEG ou un WebP. Un client dont le logo n'est pas un PNG garde
+l'icône compilée.
+
+Limites assumées :
+
+- **Windows** — l'icône du `.exe` installé dans l'Explorateur reste celle du build : elle vit dans
+  la charge compressée de l'installeur NSIS, hors de portée sans recompiler ;
+- **Windows** — le raccourci du Bureau est créé par la page finale de l'installeur, **après** le
+  hook : c'est le launcher qui le renomme à son premier démarrage (`branding.rs`) ;
+- **macOS** — après une mise à jour automatique, le Dock reprend le nom et l'icône compilés. Le
+  paquet de mise à jour est servi **intact** (la signature minisign porte sur ces octets exacts,
+  un seul octet en plus la casse), donc le `.app` remplacé est le générique. Le dossier garde son
+  nom, le provisionnement survit via la copie persistée, et le titre de fenêtre reste celui du
+  client — seuls le nom et l'icône du Dock retombent au générique jusqu'au prochain
+  téléchargement depuis le panel.
 
 ## Données du panel
 

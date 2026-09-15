@@ -10,14 +10,18 @@
 //! 2. **`provisioning.blob` à côté de l'exécutable** — écrit par le hook NSIS
 //!    de l'installeur Windows, qui a relu son propre bloc au moment
 //!    d'installer.
-//! 3. **`provisioning.json` à côté du bundle `.app`** (macOS) — posé par le
-//!    zip que le panel reconstruit à partir du `.app.tar.gz`, jamais dans
-//!    `Contents/` pour ne pas casser la signature de code du bundle.
-//! 4. **`provisioning.json` du dossier de données** — la copie persistée, qui
-//!    survit aux mises à jour (l'installeur téléchargé par l'updater, lui, n'a
-//!    ni bloc ni fichier voisin) et au renommage du dossier d'installation.
-//! 5. **`LUUXCRAFT_USER_ID` compilé** — pour qui veut vraiment un build dédié.
-//! 6. Rien : l'interface demande son code au joueur (le cas du `.dmg` macOS,
+//! 3. **`Contents/Resources/provisioning.json`** (macOS) — posé *dans* le
+//!    bundle par le zip que le panel reconstruit à partir du `.app.tar.gz`.
+//!    C'est ce qui permet au joueur de ne rien faire d'autre que glisser le
+//!    `.app` dans Applications : la configuration voyage avec lui.
+//! 4. **`provisioning.json` à côté du bundle `.app`** (macOS) — l'emplacement
+//!    des premiers zips du panel, gardé pour ceux déjà téléchargés.
+//! 5. **`provisioning.json` du dossier de données** — la copie persistée, qui
+//!    survit aux mises à jour (le bundle téléchargé par l'updater, lui, n'a ni
+//!    bloc ni fichier de configuration) et au renommage du dossier
+//!    d'installation.
+//! 6. **`LUUXCRAFT_USER_ID` compilé** — pour qui veut vraiment un build dédié.
+//! 7. Rien : l'interface demande son code au joueur (le cas du `.dmg` macOS,
 //!    pour qui préfère l'installeur traditionnel).
 //!
 //! Les sources fraîches (1 et 2) passent avant la copie persistée : réinstaller
@@ -180,33 +184,50 @@ fn read_persisted(path: &Path) -> Option<Provisioning> {
     normalize(&stored.api_url, &stored.key)
 }
 
+/// `Contents/Resources` du bundle, à partir du chemin de son exécutable
+/// (`<bundle>.app/Contents/MacOS/<binaire>`). Pure fonction de chemins,
+/// testable sans dépendre de l'OS courant.
+fn app_bundle_resources_dir(exe: &Path) -> Option<PathBuf> {
+    let contents = exe.parent()?.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+    Some(contents.join("Resources"))
+}
+
 /// Dossier qui contient aussi le bundle `.app`, à partir du chemin de son
-/// exécutable (`<bundle>.app/Contents/MacOS/<binaire>`, trois niveaux plus
-/// haut). Pure fonction de chemins, testable sans dépendre de l'OS courant ;
-/// seul l'appelant (`read_app_bundle_sibling`) est spécifique à macOS.
+/// exécutable (trois niveaux plus haut).
 fn app_bundle_sibling_dir(exe: &Path) -> Option<PathBuf> {
     exe.parent()?.parent()?.parent().map(Path::to_path_buf)
 }
 
-/// macOS uniquement : `provisioning.json` posé à côté du bundle `.app` par le
-/// zip que le panel reconstruit à partir du `.app.tar.gz` (voir
-/// `PublicLauncherController`, route `/api/launcher/download/…/darwin/…`).
+/// macOS uniquement : la configuration que le panel a posée dans le bundle.
 ///
-/// Ce fichier ne touche jamais à `Contents/` : `codesign` scelle le hash de
-/// chaque fichier du bundle dans sa signature, et y ajouter quoi que ce soit
-/// après coup la casserait (Gatekeeper refuserait de lancer l'application).
-/// C'est pour ça que ce provisionnement vit hors du bundle plutôt que dans un
-/// footer comme sur Windows/Linux — un `.app` n'a de toute façon pas de
-/// « fin » unique où en ajouter un, c'est une arborescence de fichiers.
+/// `Contents/Resources/provisioning.json` d'abord — c'est là que le zip
+/// reconstruit par le panel l'écrit, à l'intérieur du bundle, pour que glisser
+/// le `.app` dans Applications suffise et que rien ne soit à saisir. Le fichier
+/// voisin ensuite, pour les zips de la première version du panel, qui le
+/// posaient à côté du bundle.
+///
+/// Écrire dans `Contents/` est possible parce que le bundle n'est pas signé :
+/// `codesign` scelle le hash de chaque fichier du bundle dans
+/// `Contents/_CodeSignature`, mais ce sceau n'existe que si une identité de
+/// signature Apple a été fournie au build. Le panel refuse d'ailleurs de
+/// personnaliser un bundle qui en porte un (voir `lib/provisioning.ts`).
 #[cfg(target_os = "macos")]
-fn read_app_bundle_sibling() -> Option<Provisioning> {
+fn read_app_bundle() -> Option<Provisioning> {
     let exe = std::env::current_exe().ok()?;
-    let dir = app_bundle_sibling_dir(&exe)?;
-    read_persisted(&dir.join(PERSISTED_FILE))
+    if let Some(resources) = app_bundle_resources_dir(&exe) {
+        if let Some(found) = read_persisted(&resources.join(PERSISTED_FILE)) {
+            return Some(found);
+        }
+    }
+    let sibling = app_bundle_sibling_dir(&exe)?;
+    read_persisted(&sibling.join(PERSISTED_FILE))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_app_bundle_sibling() -> Option<Provisioning> {
+fn read_app_bundle() -> Option<Provisioning> {
     None
 }
 
@@ -245,7 +266,7 @@ pub fn resolve(launcher_dir: &Path) -> Option<(Provisioning, ProvisioningSource)
         }
     }
 
-    if let Some(found) = read_app_bundle_sibling() {
+    if let Some(found) = read_app_bundle() {
         let _ = persist(launcher_dir, &found);
         return Some((found, ProvisioningSource::Installer));
     }
@@ -411,9 +432,30 @@ mod tests {
         assert_eq!(parse_blob(&utf16).unwrap().key, "k");
     }
 
-    /// `<bundle>.app/Contents/MacOS/<binaire>` → trois niveaux plus haut, le
-    /// dossier qui contient aussi `<bundle>.app` — la racine d'extraction du
-    /// zip que le panel construit pour macOS.
+    /// `<bundle>.app/Contents/MacOS/<binaire>` → `Contents/Resources`, là où le
+    /// panel pose la configuration du client. C'est le chemin qui compte : il
+    /// suit le bundle quand le joueur le glisse dans Applications.
+    #[test]
+    fn app_bundle_resources_dir_sits_next_to_the_macos_dir() {
+        let exe = Path::new("/Applications/Mon Serveur.app/Contents/MacOS/luuxcraft-launcher");
+        assert_eq!(
+            app_bundle_resources_dir(exe),
+            Some(PathBuf::from("/Applications/Mon Serveur.app/Contents/Resources")),
+        );
+    }
+
+    /// Hors d'un bundle (un binaire posé n'importe où), il n'y a pas de
+    /// `Contents` : renvoyer un chemin quand même ferait lire un
+    /// `provisioning.json` étranger, posé à côté par hasard.
+    #[test]
+    fn app_bundle_resources_dir_is_none_outside_a_bundle() {
+        assert_eq!(app_bundle_resources_dir(Path::new("/usr/local/bin/launcher")), None);
+        assert_eq!(app_bundle_resources_dir(Path::new("/binary")), None);
+    }
+
+    /// Emplacement des premiers zips du panel, gardé pour ceux déjà
+    /// téléchargés : trois niveaux plus haut, le dossier qui contient aussi
+    /// `<bundle>.app`.
     #[test]
     fn app_bundle_sibling_dir_is_three_levels_above_the_executable() {
         let exe = Path::new("/Users/joueur/Downloads/LuuxCraft Launcher.app/Contents/MacOS/luuxcraft-launcher");

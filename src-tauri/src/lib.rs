@@ -2,6 +2,7 @@
 //!
 //! Responsibilities are split by module: `config` (central configuration),
 //! `provisioning` (which client of the panel this launcher serves),
+//! `branding` (the client's name and logo, applied at runtime),
 //! `api` (panel client and models), `accounts`/`auth`/`sessions`
 //! (multi-account, sign-in flows and automatic renewal), `skins`,
 //! `instances`/`game` (install and launch through `crust_core`), `java`,
@@ -10,6 +11,7 @@
 mod accounts;
 mod api;
 mod auth;
+mod branding;
 mod commands;
 mod config;
 mod error;
@@ -111,6 +113,17 @@ pub fn run() {
             let state = AppState::new(config, provisioning_source, paths)?;
             log::info!("game root: {}", state.game_root().display());
             let paired = state.config.is_provisioned();
+
+            // Nom et logo du client d'après le dernier snapshot connu : la
+            // fenêtre s'ouvre déjà à la bonne identité, sans attendre le panel.
+            // Elle sera rafraîchie à la première réponse de `/config`.
+            let cached = state.cached_snapshot();
+            branding::apply_cached(
+                app.handle(),
+                cached.as_ref().and_then(|snapshot| snapshot.config.brand.as_ref()),
+                &state.paths.launcher_dir,
+            );
+
             app.manage(state);
             // Nothing to renew before the launcher knows which panel to ask.
             if paired {
