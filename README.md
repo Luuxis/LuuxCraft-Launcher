@@ -245,6 +245,13 @@ panel via `.github/scripts/panel-release.mjs`. À configurer une fois sur le dé
 | `TAURI_SIGNING_PRIVATE_KEY` | secret | contenu de `~/.tauri/luuxcraft-launcher.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | secret | vide si la clé n'en a pas |
 
+C'est toute la configuration : **aucun identifiant de stockage à fournir**. Les octets sont
+téléversés en multipart vers le panel, qui les écrit par sa propre liaison R2 — la même qui les
+relit ensuite pour vérifier. Un artefact accepté est donc forcément un artefact visible, là où
+des identifiants S3 mal réglés pourraient écrire dans un bucket que le panel ne lit pas. Le
+découpage en parts enlève par ailleurs toute limite de taille (un AppImage embarque webkit2gtk et
+dépasserait la limite de corps de requête d'un Worker en un seul envoi).
+
 Le workflow part sur un tag `v*` ou à la main (canal `stable`/`beta`, notes de version, et la
 possibilité de laisser la release en préparation). La version publiée est celle de
 `src-tauri/tauri.conf.json`, pas celle du tag : c'est elle que tauri utilise pour nommer les

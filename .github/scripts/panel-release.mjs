@@ -20,7 +20,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { open, readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 const BUILD_KEY_HEADER = 'X-Launcher-Build-Key'
@@ -52,11 +52,12 @@ function panelBase() {
 /**
  * Appelle une route de build du panel.
  *
- * Le corps d'erreur est remonté tel quel : le panel renvoie un code machine
- * (`already_published`, `missing_signature`…) et le voir dans les logs de la
- * CI évite d'avoir à deviner ce qui a été refusé.
+ * `body` est envoyé en JSON ; `raw` envoie des octets tels quels (les parts du
+ * téléversement). Le corps d'erreur est remonté tel quel : le panel renvoie un
+ * code machine (`already_published`, `missing_signature`…) et le voir dans les
+ * logs de la CI évite d'avoir à deviner ce qui a été refusé.
  */
-async function callPanel(path, { method = 'POST', body } = {}) {
+async function callPanel(path, { method = 'POST', body, raw } = {}) {
     const url = `${panelBase()}${path}`
     const response = await fetch(url, {
         method,
@@ -64,8 +65,9 @@ async function callPanel(path, { method = 'POST', body } = {}) {
             [BUILD_KEY_HEADER]: env('PANEL_BUILD_KEY'),
             Accept: 'application/json',
             ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+            ...(raw === undefined ? {} : { 'Content-Type': 'application/octet-stream' }),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: raw !== undefined ? raw : body === undefined ? undefined : JSON.stringify(body),
     })
 
     const text = await response.text()
@@ -77,7 +79,10 @@ async function callPanel(path, { method = 'POST', body } = {}) {
     }
 
     if (!response.ok) {
-        fail(`${method} ${path} → ${response.status} ${response.statusText}: ${text || '(corps vide)'}`)
+        // Une exception, pas `fail()` : `process.exit` couperait court aux
+        // `catch`/`finally` des appelants, et le téléversement en cours
+        // resterait à l'abandon dans R2 au lieu d'être annulé.
+        throw new Error(`${method} ${path} → ${response.status} ${response.statusText}: ${text || '(corps vide)'}`)
     }
     return parsed
 }
@@ -96,12 +101,27 @@ async function readVersion() {
  * `tauri-action` renvoie un tableau à plat où les `.sig` côtoient les bundles ;
  * le panel, lui, attend la signature *avec* l'artefact qu'elle signe, parce que
  * c'est ce couple qui rend une entrée de mise à jour valide.
+ *
+ * Les répertoires sont écartés : sous macOS la liste contient le bundle
+ * `.app` lui-même, qui est une arborescence et non un fichier. Ce n'est pas un
+ * oubli qu'il ne soit pas téléversé — c'est le `.app.tar.gz` voisin qui porte
+ * le même contenu sous forme de fichier, et c'est lui que l'updater et le zip
+ * macOS du panel utilisent.
  */
-function pairArtifacts(paths) {
+async function pairArtifacts(paths) {
     const signatures = new Map()
     const artifacts = []
 
     for (const path of paths) {
+        const stats = await stat(path).catch(() => null)
+        if (!stats) {
+            console.warn(`::warning::chemin introuvable, ignoré : ${basename(path)}`)
+            continue
+        }
+        if (!stats.isFile()) {
+            console.log(`  – ${basename(path)} ignoré (répertoire)`)
+            continue
+        }
         if (path.endsWith(SIGNATURE_SUFFIX)) {
             signatures.set(path.slice(0, -SIGNATURE_SUFFIX.length), path)
         } else {
@@ -136,62 +156,90 @@ async function commandOpen() {
 }
 
 /**
- * Téléverse un artefact : enregistrement, octets, puis confirmation.
+ * Remplit `buffer` autant que le fichier le permet.
  *
- * Les octets vont **directement dans R2** par URL présignée quand le panel en
- * fournit une. C'est ce qui permet de téléverser une AppImage de 100 Mo sans se
- * heurter à la limite de corps de requête d'un Worker Cloudflare ; la route
- * relayée n'est qu'un repli pour un panel sans identifiants S3.
+ * R2 exige des parts de taille **égale**, sauf la dernière. Une lecture courte
+ * en milieu de fichier — que `read()` a le droit de renvoyer — produirait une
+ * part intermédiaire plus petite et ferait échouer l'assemblage ; boucler
+ * jusqu'à remplissage l'évite. Renvoie le nombre d'octets lus (0 en fin de
+ * fichier).
+ */
+async function readFull(handle, buffer) {
+    let filled = 0
+    while (filled < buffer.byteLength) {
+        const { bytesRead } = await handle.read(buffer, filled, buffer.byteLength - filled, null)
+        if (bytesRead === 0) break
+        filled += bytesRead
+    }
+    return filled
+}
+
+/**
+ * Téléverse un artefact : enregistrement, parts, assemblage.
  *
- * La confirmation est obligatoire : elle fait constater au panel la taille
- * réellement stockée, et c'est ce qu'il servira en `Content-Length`.
+ * Les octets passent par la **liaison R2 du Worker**, en multipart. Deux
+ * raisons plutôt qu'un envoi direct par URL présignée S3 :
+ *
+ * - aucun identifiant S3 à configurer, et surtout aucun risque d'écrire dans
+ *   un bucket que le panel ne relit pas — c'est la même liaison qui assemble
+ *   et vérifie ;
+ * - le découpage en parts enlève tout plafond : un AppImage Tauri embarque
+ *   webkit2gtk et dépasserait la limite de corps de requête d'un Worker.
+ *
+ * Le fichier est lu part par part, jamais entièrement en mémoire, et son
+ * empreinte SHA-256 est calculée au passage — d'où son envoi à l'assemblage
+ * plutôt qu'à l'enregistrement, ce qui évite une seconde lecture complète.
  */
 async function uploadOne(version, { path, signaturePath }, { target, arch }) {
-    const bytes = await readFile(path)
+    const stats = await stat(path)
     const filename = basename(path)
+    if (stats.size === 0) fail(`artefact vide : ${filename}`)
     const signature = signaturePath ? (await readFile(signaturePath, 'utf8')).trim() : null
 
-    const registered = await callPanel(`/api/launcher/build/release/${encodeURIComponent(version)}/artifact`, {
-        body: {
-            filename,
-            target,
-            arch,
-            size: bytes.byteLength,
-            sha256: createHash('sha256').update(bytes).digest('hex'),
-            signature,
-        },
-    })
+    const { artifactId, format, role } = await callPanel(
+        `/api/launcher/build/release/${encodeURIComponent(version)}/artifact`,
+        { body: { filename, target, arch, size: stats.size, signature } },
+    )
 
-    const { artifactId, uploadUrl, uploadFallbackUrl, format, role } = registered
+    const { uploadId, partSize } = await callPanel(`/api/launcher/build/artifact/${artifactId}/upload`)
 
-    if (uploadUrl) {
-        const put = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: { 'Content-Length': String(bytes.byteLength) },
-            body: bytes,
-        })
-        if (!put.ok) {
-            fail(`téléversement R2 de ${filename} → ${put.status} ${put.statusText}: ${await put.text()}`)
+    const handle = await open(path, 'r')
+    const digest = createHash('sha256')
+    const parts = []
+    const totalParts = Math.max(1, Math.ceil(stats.size / partSize))
+    try {
+        const buffer = Buffer.allocUnsafe(partSize)
+        for (let partNumber = 1; ; partNumber++) {
+            const filled = await readFull(handle, buffer)
+            if (filled === 0) break
+            const chunk = buffer.subarray(0, filled)
+            digest.update(chunk)
+            const { part } = await callPanel(
+                `/api/launcher/build/artifact/${artifactId}/part` +
+                    `?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
+                { method: 'PUT', raw: chunk },
+            )
+            parts.push(part)
+            if (totalParts > 1) console.log(`    part ${partNumber}/${totalParts}`)
+            if (filled < partSize) break
         }
-        await callPanel(`/api/launcher/build/artifact/${artifactId}/confirm`)
-    } else {
-        console.log(`::notice::pas d'identifiants S3 sur le panel, ${filename} passe par le Worker`)
-        const put = await fetch(uploadFallbackUrl, {
-            method: 'PUT',
-            headers: {
-                [BUILD_KEY_HEADER]: env('PANEL_BUILD_KEY'),
-                'Content-Type': 'application/octet-stream',
-                'Content-Length': String(bytes.byteLength),
-            },
-            body: bytes,
-        })
-        if (!put.ok) {
-            fail(`téléversement relayé de ${filename} → ${put.status} ${put.statusText}: ${await put.text()}`)
-        }
+    } catch (error) {
+        // Sans abandon explicite, les parts déjà envoyées resteraient dans R2,
+        // facturées et invisibles.
+        await callPanel(`/api/launcher/build/artifact/${artifactId}/abort`, { body: { uploadId } }).catch(
+            () => undefined,
+        )
+        throw error
+    } finally {
+        await handle.close()
     }
 
+    await callPanel(`/api/launcher/build/artifact/${artifactId}/complete`, {
+        body: { uploadId, parts, sha256: digest.digest('hex') },
+    })
+
     const signed = signature ? 'signé' : 'non signé'
-    console.log(`  ✓ ${filename} — ${format}/${role}, ${(bytes.byteLength / 1024 / 1024).toFixed(1)} Mio, ${signed}`)
+    console.log(`  ✓ ${filename} — ${format}/${role}, ${(stats.size / 1024 / 1024).toFixed(1)} Mio, ${signed}`)
 }
 
 async function commandUpload() {
@@ -209,7 +257,8 @@ async function commandUpload() {
         fail('aucun artefact produit par le build')
     }
 
-    const pairs = pairArtifacts(paths)
+    const pairs = await pairArtifacts(paths)
+    if (pairs.length === 0) fail(`aucun fichier téléversable pour ${target}/${arch}`)
     console.log(`${pairs.length} artefact(s) pour ${target}/${arch} :`)
 
     // En série, volontairement : plusieurs centaines de Mio en parallèle sur un
@@ -232,4 +281,10 @@ if (!Object.hasOwn(COMMANDS, command)) {
     fail(`sous-commande inconnue : ${command ?? '(aucune)'} — attendu ${Object.keys(COMMANDS).join(', ')}`)
 }
 
-await COMMANDS[command]()
+// Les erreurs remontent jusqu'ici pour que les nettoyages des appelants aient
+// tourné avant l'arrêt du processus.
+try {
+    await COMMANDS[command]()
+} catch (error) {
+    fail(error instanceof Error ? error.message : String(error))
+}
