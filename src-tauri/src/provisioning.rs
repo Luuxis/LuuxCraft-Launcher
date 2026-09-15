@@ -10,12 +10,15 @@
 //! 2. **`provisioning.blob` à côté de l'exécutable** — écrit par le hook NSIS
 //!    de l'installeur Windows, qui a relu son propre bloc au moment
 //!    d'installer.
-//! 3. **`provisioning.json` du dossier de données** — la copie persistée, qui
+//! 3. **`provisioning.json` à côté du bundle `.app`** (macOS) — posé par le
+//!    zip que le panel reconstruit à partir du `.app.tar.gz`, jamais dans
+//!    `Contents/` pour ne pas casser la signature de code du bundle.
+//! 4. **`provisioning.json` du dossier de données** — la copie persistée, qui
 //!    survit aux mises à jour (l'installeur téléchargé par l'updater, lui, n'a
-//!    pas de bloc) et au renommage du dossier d'installation.
-//! 4. **`LUUXCRAFT_USER_ID` compilé** — pour qui veut vraiment un build dédié.
-//! 5. Rien : l'interface demande son code au joueur (le cas du `.dmg` macOS,
-//!    dont le format ne tolère pas d'octets ajoutés à la fin).
+//!    ni bloc ni fichier voisin) et au renommage du dossier d'installation.
+//! 5. **`LUUXCRAFT_USER_ID` compilé** — pour qui veut vraiment un build dédié.
+//! 6. Rien : l'interface demande son code au joueur (le cas du `.dmg` macOS,
+//!    pour qui préfère l'installeur traditionnel).
 //!
 //! Les sources fraîches (1 et 2) passent avant la copie persistée : réinstaller
 //! avec l'installeur d'un autre serveur doit changer de serveur, pas garder
@@ -177,6 +180,36 @@ fn read_persisted(path: &Path) -> Option<Provisioning> {
     normalize(&stored.api_url, &stored.key)
 }
 
+/// Dossier qui contient aussi le bundle `.app`, à partir du chemin de son
+/// exécutable (`<bundle>.app/Contents/MacOS/<binaire>`, trois niveaux plus
+/// haut). Pure fonction de chemins, testable sans dépendre de l'OS courant ;
+/// seul l'appelant (`read_app_bundle_sibling`) est spécifique à macOS.
+fn app_bundle_sibling_dir(exe: &Path) -> Option<PathBuf> {
+    exe.parent()?.parent()?.parent().map(Path::to_path_buf)
+}
+
+/// macOS uniquement : `provisioning.json` posé à côté du bundle `.app` par le
+/// zip que le panel reconstruit à partir du `.app.tar.gz` (voir
+/// `PublicLauncherController`, route `/api/launcher/download/…/darwin/…`).
+///
+/// Ce fichier ne touche jamais à `Contents/` : `codesign` scelle le hash de
+/// chaque fichier du bundle dans sa signature, et y ajouter quoi que ce soit
+/// après coup la casserait (Gatekeeper refuserait de lancer l'application).
+/// C'est pour ça que ce provisionnement vit hors du bundle plutôt que dans un
+/// footer comme sur Windows/Linux — un `.app` n'a de toute façon pas de
+/// « fin » unique où en ajouter un, c'est une arborescence de fichiers.
+#[cfg(target_os = "macos")]
+fn read_app_bundle_sibling() -> Option<Provisioning> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = app_bundle_sibling_dir(&exe)?;
+    read_persisted(&dir.join(PERSISTED_FILE))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_app_bundle_sibling() -> Option<Provisioning> {
+    None
+}
+
 /// Écrit la copie persistée, celle qui survivra aux mises à jour.
 pub fn persist(launcher_dir: &Path, provisioning: &Provisioning) -> std::io::Result<()> {
     std::fs::create_dir_all(launcher_dir)?;
@@ -210,6 +243,11 @@ pub fn resolve(launcher_dir: &Path) -> Option<(Provisioning, ProvisioningSource)
             let _ = persist(launcher_dir, &found);
             return Some((found, ProvisioningSource::Installer));
         }
+    }
+
+    if let Some(found) = read_app_bundle_sibling() {
+        let _ = persist(launcher_dir, &found);
+        return Some((found, ProvisioningSource::Installer));
     }
 
     if let Some(found) = read_persisted(&launcher_dir.join(PERSISTED_FILE)) {
@@ -371,5 +409,46 @@ mod tests {
         let ascii = blob(r#"{"v":1,"apiUrl":"https://a.fr/api","key":"k"}"#);
         let utf16: Vec<u8> = ascii.iter().flat_map(|byte| [*byte, 0]).collect();
         assert_eq!(parse_blob(&utf16).unwrap().key, "k");
+    }
+
+    /// `<bundle>.app/Contents/MacOS/<binaire>` → trois niveaux plus haut, le
+    /// dossier qui contient aussi `<bundle>.app` — la racine d'extraction du
+    /// zip que le panel construit pour macOS.
+    #[test]
+    fn app_bundle_sibling_dir_is_three_levels_above_the_executable() {
+        let exe = Path::new("/Users/joueur/Downloads/LuuxCraft Launcher.app/Contents/MacOS/luuxcraft-launcher");
+        assert_eq!(
+            app_bundle_sibling_dir(exe),
+            Some(PathBuf::from("/Users/joueur/Downloads")),
+        );
+    }
+
+    #[test]
+    fn app_bundle_sibling_dir_is_none_for_a_path_too_shallow_to_be_a_bundle() {
+        assert_eq!(app_bundle_sibling_dir(Path::new("/binary")), None);
+        assert_eq!(app_bundle_sibling_dir(Path::new("/a/binary")), None);
+    }
+
+    /// Le fichier doit être un JSON `{apiUrl, key}` ordinaire, pas le format à
+    /// base64 des footers : rien ne le contraint en taille ou en alphabet
+    /// puisqu'il n'est jamais embarqué dans un autre binaire.
+    #[test]
+    fn app_bundle_sibling_reads_plain_json_like_the_persisted_copy() {
+        let dir = std::env::temp_dir().join(format!(
+            "luuxcraft-provisioning-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        std::fs::write(
+            dir.join(PERSISTED_FILE),
+            br#"{"apiUrl":"https://luuxcraft.fr/api","key":"abc-def-ghi"}"#,
+        )
+        .expect("write sibling file");
+
+        let found = read_persisted(&dir.join(PERSISTED_FILE)).expect("readable");
+        assert_eq!(found.api_url, "https://luuxcraft.fr/api");
+        assert_eq!(found.key, "abc-def-ghi");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

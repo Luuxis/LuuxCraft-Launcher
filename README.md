@@ -54,16 +54,38 @@ octets du fichier, jamais dans son nom.
    portable, qui *sont* le fichier téléchargé ;
 2. **`provisioning.blob` à côté de l'exécutable** — écrit par `src-tauri/installer-hooks.nsh`,
    le hook NSIS qui relit son propre bloc au moment d'installer ;
-3. **`provisioning.json` du dossier de données** — la copie persistée, qui survit aux mises à
-   jour (l'installeur téléchargé par l'updater, lui, n'a pas de bloc) ;
-4. **`LUUXCRAFT_USER_ID` compilé**, pour un build dédié ;
-5. sinon, l'interface demande son code au joueur une seule fois
-   (`src/features/provisioning/PairingView.tsx`).
+3. **`provisioning.json` à côté du bundle `.app`** (macOS) — posé par le zip que le panel
+   reconstruit à partir du `.app.tar.gz`, **jamais dans `Contents/`** ;
+4. **`provisioning.json` du dossier de données** — la copie persistée, qui survit aux mises à
+   jour (l'installeur téléchargé par l'updater, lui, n'a ni bloc ni fichier voisin) ;
+5. **`LUUXCRAFT_USER_ID` compilé**, pour un build dédié ;
+6. sinon, l'interface demande son code au joueur une seule fois
+   (`src/features/provisioning/PairingView.tsx`) — le cas du `.dmg` traditionnel.
 
 Les sources fraîches passent avant la copie persistée : réinstaller avec l'installeur d'un autre
-serveur doit changer de serveur. Le cinquième cas ne sert qu'aux formats qui ne tolèrent pas
-d'octets ajoutés à la fin — le `.dmg` de macOS a son trailer `koly` collé à la fin, un `.deb`
-porte des sommes de contrôle.
+serveur doit changer de serveur. Le sixième cas ne sert qu'aux formats qui ne tolèrent ni bloc
+ajouté à la fin ni fichier voisin injectable — le `.dmg` a son trailer `koly` collé à la fin, un
+`.deb` porte des sommes de contrôle.
+
+### macOS : zip préconfiguré plutôt qu'un code à saisir
+
+Un `.app` est une arborescence de fichiers, pas un binaire avec une « fin » où ajouter un bloc —
+et `codesign` scelle le hash de chaque fichier du bundle dans sa signature : y ajouter quoi que
+ce soit **dans** `Contents/` après coup la casse (Gatekeeper refuse de lancer l'app, « endommagée
+»). Reconstruire la signature demanderait le certificat développeur Apple et un aller-retour de
+notarisation, hors de portée d'un Worker.
+
+La solution retenue ne touche donc jamais au bundle : au téléchargement, le panel reconstruit un
+zip à partir du `.app.tar.gz` déjà produit pour l'updater (`lib/provisioning.ts` →
+`createProvisionedMacZipStream`, via les writers `lib/tar.ts` / `lib/zip.ts` déjà utilisés pour
+les sauvegardes) — chaque fichier du bundle est recopié tel quel (mêmes octets, même hash), et un
+seul fichier neuf, `provisioning.json`, est ajouté **à côté** de `<App>.app` dans le zip. Au
+premier lancement, `provisioning.rs` retrouve ce fichier en remontant de trois niveaux depuis
+l'exécutable (`<bundle>.app/Contents/MacOS/<binaire>` → le dossier qui contient aussi
+`<bundle>.app`, la racine d'extraction du zip).
+
+Le `.dmg` traditionnel reste servi en repli (`?format=dmg`), pour qui préfère l'installeur
+classique au prix du code à saisir une fois.
 
 Le bloc n'est pas signé, et n'a pas à l'être : il ne contient que des informations déjà
 publiques (la clé client voyage en clair dans toutes les URLs de l'API) et quiconque peut le
