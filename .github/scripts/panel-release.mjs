@@ -9,12 +9,18 @@
  *
  * Trois sous-commandes, appelées par `.github/workflows/deploy.yml` :
  *
- *   open     ouvre (ou retrouve) la release en préparation pour cette version
+ *   open     ouvre la release de cette version, en écrasant ce qui existait
  *   upload   téléverse les artefacts d'une plateforme et leurs signatures
  *   publish  publie la release — c'est là que les launchers installés la voient
  *
- * `open` et `publish` sont idempotents : la matrice de build lance un job par
- * plateforme, sans ordre garanti, et un job rejoué ne doit rien casser.
+ * **`open` écrase** : relancer le workflow sur une version déjà construite —
+ * publiée ou non — supprime ses artefacts et la remet en préparation, pour que
+ * la release corresponde exactement à ce que cette exécution a produit. Tant
+ * que le `publish` final n'a pas eu lieu, cette version n'est plus servie.
+ *
+ * `upload` et `publish`, eux, sont sans effet de bord à rejouer : téléverser
+ * remplace le créneau d'une plateforme sans toucher aux autres, et publier une
+ * release déjà publiée ne fait rien.
  *
  * Aucune dépendance : `fetch`, `node:fs` et `node:crypto` suffisent.
  */
@@ -151,7 +157,26 @@ async function commandOpen() {
                     : null,
         },
     })
-    console.log(`release ${version} ouverte (${result.created ? 'créée' : 'déjà ouverte'})`)
+    if (result.created) {
+        console.log(`release ${version} créée`)
+        return version
+    }
+
+    // Relancer un build écrase la version : le panel a supprimé les artefacts
+    // de l'exécution précédente et repassé la release en préparation. C'est
+    // voulu, mais ça mérite d'être lisible dans les logs — surtout quand la
+    // version était publiée, puisqu'elle disparaît alors des téléchargements et
+    // des mises à jour jusqu'au `publish` de fin de workflow.
+    if (result.wasPublished) {
+        console.warn(
+            `::warning::la version ${version} était publiée : elle est retirée des téléchargements` +
+                ` le temps du build, et ses ${result.replaced} artefact(s) ont été supprimés`,
+        )
+    } else if (result.replaced > 0) {
+        console.log(`release ${version} rouverte, ${result.replaced} artefact(s) précédent(s) supprimé(s)`)
+    } else {
+        console.log(`release ${version} rouverte`)
+    }
     return version
 }
 

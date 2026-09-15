@@ -304,6 +304,16 @@ build, donc une plateforme en échec ne publie rien ; et le panel refuse en plus
 les octets manquent ou un artefact de mise à jour sans signature. Si malgré tout une plateforme
 n'a pas d'artefact, le manifeste lui répond « à jour » au lieu d'une URL vide.
 
+**Relancer un build écrase la version.** Le job `open-release` supprime les artefacts de
+l'exécution précédente — octets R2 compris — et remet la release en préparation, même si elle
+était publiée : la release correspond ainsi exactement à ce que cette exécution a produit, sans
+qu'un artefact orphelin survive dans un créneau que la nouvelle matrice ne remplit plus. Le prix à
+connaître : **entre le début du build et le `publish` final, cette version n'est plus servie**. Les
+launchers installés et la page de téléchargement retombent sur la release publiée précédente, ou
+n'ont plus rien si c'était la seule. La CI l'annonce par un `::warning::` quand la version écrasée
+était publiée. Pour ne rien interrompre, incrémenter la version dans `src-tauri/tauri.conf.json`
+plutôt que reconstruire la même.
+
 Build signé en local, pour vérifier avant de pousser :
 
 ```bash
