@@ -153,6 +153,7 @@ pub async fn remote_fetch(
         app,
         state.http.inner().clone(),
         state.paths.launcher_dir.clone(),
+        state.config.user_id.clone(),
         snapshot.config.brand.clone(),
     );
     tauri::async_runtime::spawn(branding);

@@ -295,15 +295,40 @@ impl LauncherConfig {
     }
 }
 
+/// Dossier qui regroupe les données rangées par client, sous chacune des
+/// racines de l'application.
+const CLIENTS_DIR: &str = "clients";
+
 /// Where the launcher keeps its own files and where the game goes.
 ///
 /// In release builds everything follows the OS conventions resolved by Tauri.
 /// In debug builds everything goes to `data/` at the root of the repository so
 /// an install can be inspected next to the sources and thrown away at once.
+///
+/// ## Un dossier par client
+///
+/// Un seul launcher est compilé pour tous les clients du panel, et rien
+/// n'empêche un joueur d'installer celui de deux serveurs différents. Ses
+/// paramètres, ses comptes, ses skins et ses caches sont donc rangés sous
+/// `clients/<clé du client>/` : sans ça, le second launcher installé
+/// écraserait les réglages du premier, et surtout les deux partageraient les
+/// jetons de session stockés dans `accounts.json`.
+///
+/// Ce qui reste **hors** de ce découpage, volontairement :
+///
+/// - `provisioning.json`, la copie persistée du provisionnement, qui vit à la
+///   racine parce qu'il faut savoir *quel* client avant de pouvoir ouvrir son
+///   dossier (voir `provisioning::resolve`) ;
+/// - la racine du jeu, que le panel désigne par son `dataDirectory` et qui
+///   pèse des gigaoctets : deux serveurs qui la partagent partagent aussi les
+///   versions, bibliothèques et assets déjà téléchargés, ce qui est le
+///   comportement voulu.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Paths {
-    /// `settings.json` and other launcher-owned files (accounts live with the game).
+    /// Racine commune à tous les clients : c'est là que vit `provisioning.json`.
+    pub shared_dir: PathBuf,
+    /// `settings.json`, `accounts.json`, les skins et le logo mis en cache.
     pub launcher_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -314,11 +339,18 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// Chemins connus avant de savoir à quel client ce launcher appartient.
+    ///
+    /// Tant que le provisionnement n'est pas résolu, tout pointe sur les
+    /// racines communes : c'est suffisant pour y chercher `provisioning.json`,
+    /// et c'est aussi ce que voit un launcher jamais appairé, qui n'affiche que
+    /// l'écran de saisie de code et n'a donc rien à ranger.
     pub fn resolve(app: &AppHandle) -> tauri::Result<Self> {
         if cfg!(debug_assertions) {
             let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let root = manifest.parent().unwrap_or(&manifest).join("data");
             return Ok(Self {
+                shared_dir: root.join("launcher"),
                 launcher_dir: root.join("launcher"),
                 cache_dir: root.join("cache"),
                 logs_dir: root.join("logs"),
@@ -327,8 +359,10 @@ impl Paths {
             });
         }
         let resolver = app.path();
+        let launcher_dir = resolver.app_data_dir()?;
         Ok(Self {
-            launcher_dir: resolver.app_data_dir()?,
+            shared_dir: launcher_dir.clone(),
+            launcher_dir,
             cache_dir: resolver.app_cache_dir()?,
             logs_dir: resolver.app_log_dir()?,
             game_base_dir: resolver.data_dir()?,
@@ -336,11 +370,65 @@ impl Paths {
         })
     }
 
+    /// La même arborescence, rangée sous le client donné.
+    ///
+    /// Appelé dès que le provisionnement est résolu, donc **avant** que le
+    /// greffon de journalisation n'ouvre un fichier : la migration de
+    /// l'installation héritée déplace des fichiers, et Windows refuse de
+    /// renommer un fichier ouvert.
+    pub fn scoped_to(&self, key: &str) -> Self {
+        let slug = client_dir_name(key);
+        let launcher_dir = self.launcher_dir.join(CLIENTS_DIR).join(&slug);
+        let cache_dir = self.cache_dir.join(CLIENTS_DIR).join(&slug);
+        let logs_dir = self.logs_dir.join(CLIENTS_DIR).join(&slug);
+
+        // Les trois racines se passent la liste complète : tauri en imbrique
+        // certaines l'une dans l'autre (sous Linux `app_log_dir` est un
+        // sous-dossier d'`app_data_dir`, sous Windows d'`app_cache_dir`), et
+        // sans ça la migration des données emporterait le dossier des journaux.
+        let roots = [
+            self.launcher_dir.as_path(),
+            self.cache_dir.as_path(),
+            self.logs_dir.as_path(),
+        ];
+        // `provisioning.json` est l'autre exclusion, et elle n'est pas
+        // négociable : c'est lui qui permet de retrouver ce client au démarrage
+        // suivant, il ne peut donc pas être rangé dans son dossier.
+        adopt_legacy_layout(
+            &self.launcher_dir,
+            &launcher_dir,
+            &[crate::provisioning::PERSISTED_FILE, CLIENTS_DIR],
+            &roots,
+        );
+        adopt_legacy_layout(&self.cache_dir, &cache_dir, &[CLIENTS_DIR], &roots);
+        adopt_legacy_layout(&self.logs_dir, &logs_dir, &[CLIENTS_DIR], &roots);
+
+        Self {
+            shared_dir: self.launcher_dir.clone(),
+            launcher_dir,
+            cache_dir,
+            logs_dir,
+            game_base_dir: self.game_base_dir.clone(),
+            dev_game_root: self.dev_game_root.clone(),
+        }
+    }
+
     pub fn create_all(&self) -> std::io::Result<()> {
         for dir in [&self.launcher_dir, &self.cache_dir, &self.logs_dir] {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())
+    }
+
+    /// Fichier des comptes, jetons de session compris.
+    ///
+    /// Il suit le client, pas l'installation du jeu : deux serveurs peuvent
+    /// partager une racine de jeu — c'est même souhaitable, elle pèse des
+    /// gigaoctets — mais sûrement pas les sessions Minecraft du joueur. C'est
+    /// aussi ce qui fait qu'un changement de dossier d'installation ne fait
+    /// plus perdre ses comptes.
+    pub fn accounts_file(&self) -> PathBuf {
+        self.launcher_dir.join(crate::accounts::ACCOUNTS_FILE)
     }
 
     /// The Minecraft root (`versions/`, `libraries/`, `assets/`, `runtime/`,
@@ -376,6 +464,80 @@ impl Paths {
 
     pub fn game_logs_dir(&self) -> PathBuf {
         self.logs_dir.join("game")
+    }
+}
+
+/// Nom de dossier d'un client, à partir de sa clé.
+///
+/// `provisioning::normalize` borne déjà la clé à `[A-Za-z0-9_-]`, mais pas la
+/// valeur compilée `LUUXCRAFT_USER_ID`, qui n'est jamais passée par là : le
+/// filtrage est refait ici pour que ce nom soit à coup sûr un segment de chemin
+/// et rien d'autre. Une clé vide ou entièrement filtrée retombe sur un nom
+/// fixe, ce qui range ce launcher quelque part de prévisible plutôt que de le
+/// laisser écrire à la racine commune.
+fn client_dir_name(key: &str) -> String {
+    let cleaned: String = key
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        "default".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// Déplace une installation d'avant le découpage par client dans le dossier de
+/// ce client, une fois pour toutes.
+///
+/// Tout ce qui traîne à la racine y est passé, sauf ce qui est explicitement
+/// commun : plutôt qu'une liste de fichiers à migrer qu'il faudrait penser à
+/// tenir à jour, la règle est « ce qui n'est pas commun appartient au premier
+/// client rencontré ». Le premier client rencontré est bien le bon : la racine
+/// ne contient des données que si un launcher y a déjà tourné, et il ne pouvait
+/// alors en servir qu'un seul.
+///
+/// Deux exclusions : `reserved`, les noms de fichiers à laisser sur place, et
+/// `roots`, les autres racines de l'application — tauri les imbrique parfois
+/// l'une dans l'autre, et déplacer le dossier des journaux parce qu'il se
+/// trouve être un enfant du dossier de données serait une surprise coûteuse.
+///
+/// L'existence du dossier de destination suffit à dire que c'est déjà fait. Un
+/// échec est sans conséquence — le client repart de réglages par défaut, ce qui
+/// est désagréable mais pas cassé — donc rien n'est remonté.
+fn adopt_legacy_layout(root: &Path, scoped: &Path, reserved: &[&str], roots: &[&Path]) {
+    if scoped.exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let movable: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let named = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !reserved.contains(&name));
+            named && !roots.iter().any(|other| other.starts_with(path))
+        })
+        .collect();
+    if movable.is_empty() {
+        return;
+    }
+    if std::fs::create_dir_all(scoped).is_err() {
+        return;
+    }
+    for path in movable {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        if let Err(error) = std::fs::rename(&path, scoped.join(name)) {
+            log::debug!("could not move {} to {}: {error}", path.display(), scoped.display());
+        }
     }
 }
 
@@ -452,5 +614,89 @@ mod tests {
         assert_eq!(sanitize_dir_name("../evil"), "evil");
         assert_eq!(sanitize_dir_name("  "), "luuxcraft");
         assert_eq!(sanitize_dir_name("a/b:c"), "abc");
+    }
+
+    /// La clé du client devient un segment de chemin : elle ne doit pas
+    /// pouvoir remonter d'un cran, ni désigner la racine commune.
+    #[test]
+    fn a_client_key_becomes_a_safe_directory_name() {
+        assert_eq!(client_dir_name("abc-def_ghi"), "abc-def_ghi");
+        assert_eq!(client_dir_name("../../etc"), "etc");
+        assert_eq!(client_dir_name("  "), "default");
+        assert_eq!(client_dir_name(""), "default");
+    }
+
+    /// L'installation d'avant l'isolation appartient au premier client
+    /// rencontré — il n'y en avait qu'un — mais surtout pas `provisioning.json`,
+    /// qui doit rester commun pour que le démarrage suivant sache quel client
+    /// ouvrir.
+    #[test]
+    fn the_legacy_layout_is_adopted_by_the_first_client_only() {
+        let root = std::env::temp_dir().join(format!("luuxcraft-layout-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("skins")).expect("scratch dir");
+        std::fs::write(root.join("settings.json"), b"{}").expect("settings");
+        std::fs::write(root.join(crate::provisioning::PERSISTED_FILE), b"{}").expect("provisioning");
+
+        let reserved = [crate::provisioning::PERSISTED_FILE, CLIENTS_DIR];
+        let first = root.join(CLIENTS_DIR).join("abc");
+        adopt_legacy_layout(&root, &first, &reserved, &[root.as_path()]);
+
+        assert!(first.join("settings.json").is_file(), "les réglages suivent le client");
+        assert!(first.join("skins").is_dir(), "la bibliothèque de skins aussi");
+        assert!(!root.join("settings.json").exists(), "rien ne reste en double");
+        assert!(
+            root.join(crate::provisioning::PERSISTED_FILE).is_file(),
+            "le provisionnement reste à la racine commune",
+        );
+
+        // Le client suivant installé ne doit hériter de rien.
+        let second = root.join(CLIENTS_DIR).join("xyz");
+        adopt_legacy_layout(&root, &second, &reserved, &[root.as_path()]);
+        assert!(!second.exists(), "le second client repart de réglages neufs");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Sous Linux, `app_log_dir` est un sous-dossier d'`app_data_dir` ; sous
+    /// Windows, d'`app_cache_dir`. Emporter ce dossier avec les données du
+    /// client enverrait les journaux là où plus personne ne les cherche.
+    #[test]
+    fn a_nested_application_root_is_left_where_it_is() {
+        let root = std::env::temp_dir().join(format!("luuxcraft-layout-nested-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let logs = root.join("logs");
+        std::fs::create_dir_all(logs.join("game")).expect("scratch dir");
+        std::fs::write(root.join("settings.json"), b"{}").expect("settings");
+
+        let scoped = root.join(CLIENTS_DIR).join("abc");
+        adopt_legacy_layout(&root, &scoped, &[CLIENTS_DIR], &[root.as_path(), logs.as_path()]);
+
+        assert!(scoped.join("settings.json").is_file(), "les réglages suivent le client");
+        assert!(logs.join("game").is_dir(), "les journaux restent à leur racine");
+        assert!(!scoped.join("logs").exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Relancer la migration ne doit pas re-vider la racine par-dessus des
+    /// données déjà rangées : l'existence du dossier suffit à dire « c'est
+    /// fait ».
+    #[test]
+    fn the_migration_runs_only_once() {
+        let root = std::env::temp_dir().join(format!("luuxcraft-layout-once-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let scoped = root.join(CLIENTS_DIR).join("abc");
+        std::fs::create_dir_all(&scoped).expect("scratch dir");
+        std::fs::write(scoped.join("settings.json"), b"{\"kept\":true}").expect("settings");
+        std::fs::write(root.join("settings.json"), b"{\"stale\":true}").expect("stale settings");
+
+        adopt_legacy_layout(&root, &scoped, &[CLIENTS_DIR], &[root.as_path()]);
+
+        assert_eq!(
+            std::fs::read(scoped.join("settings.json")).expect("settings"),
+            b"{\"kept\":true}",
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

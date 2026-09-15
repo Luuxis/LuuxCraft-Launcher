@@ -50,8 +50,11 @@ octets du fichier, jamais dans son nom.
 
 `src-tauri/src/provisioning.rs` cherche cette configuration dans cet ordre :
 
-1. **bloc à la fin de l'exécutable courant** — le cas d'une AppImage Linux ou d'un `.exe`
-   portable, qui *sont* le fichier téléchargé ;
+1. **bloc à la fin du fichier téléchargé** — le cas d'une AppImage Linux ou d'un `.exe`
+   portable, qui *sont* le fichier téléchargé. Sous Linux ce fichier n'est **pas**
+   `current_exe()`, qui désigne le binaire extrait au point de montage temporaire de l'AppImage
+   (`/tmp/.mount_XXXXXX/usr/bin/…`) : le runtime publie le vrai chemin dans `$APPIMAGE`, d'où
+   `provisioning::appimage_path` ;
 2. **`provisioning.blob` à côté de l'exécutable** — écrit par `src-tauri/installer-hooks.nsh`,
    le hook NSIS qui relit son propre bloc au moment d'installer ;
 3. **`Contents/Resources/provisioning.json`** (macOS) — posé *dans* le bundle par le zip que le
@@ -123,6 +126,7 @@ quatre moments.
 | Téléchargement | nom du fichier (`Mon Serveur-1.2.0-Setup.exe`) | panel, `clientDownloadFilename` |
 | Installation Windows | raccourci du menu Démarrer, icône, entrée « Applications et fonctionnalités » | `installer-hooks.nsh` |
 | Installation macOS | nom du `.app`, `CFBundleName`/`CFBundleDisplayName`, `Resources/*.icns` | panel, `createProvisionedMacAppZipStream` |
+| 1er lancement Linux | entrée du menu d'applications et icône du thème (XDG) | `src-tauri/src/desktop.rs` |
 | Exécution | titre de fenêtre, icône de la barre des tâches, logo de la barre de titre | `src-tauri/src/branding.rs` + `src/config/brand.ts` |
 
 L'icône n'est reprise que si elle est stockée en **PNG** : `.ico` et `.icns` savent embarquer un
@@ -142,6 +146,60 @@ Limites assumées :
   nom, le provisionnement survit via la copie persistée, et le titre de fenêtre reste celui du
   client — seuls le nom et l'icône du Dock retombent au générique jusqu'au prochain
   téléchargement depuis le panel.
+
+### Linux : intégration au bureau (XDG)
+
+Windows et macOS portent l'identité du client dans le conteneur : l'installeur NSIS écrit un
+raccourci et une entrée de désinstallation, le bundle `.app` porte son `Info.plist` et son
+`.icns`. Une AppImage n'est qu'un fichier exécutable : sans rien de plus, le joueur n'a ni entrée
+dans son menu d'applications, ni icône dans son dock — juste un fichier dans `Téléchargements`.
+
+`src-tauri/src/desktop.rs` écrit donc, au démarrage, aux emplacements que la spécification XDG
+réserve à l'utilisateur (aucun `sudo`, rien de touché dans `/usr`) :
+
+```
+~/.local/share/applications/<app_id>.desktop
+~/.local/share/icons/hicolor/<taille>/apps/<app_id>.png
+```
+
+`app_id` vaut `<identifiant du bundle>.<clé du client>` : deux AppImages de serveurs différents
+cohabitent sans que la seconde écrase l'entrée de la première. Le prix est que le nom de l'entrée
+ne coïncide plus avec la classe de fenêtre que GNOME utilise pour relier une fenêtre ouverte à son
+icône — d'où le `StartupWMClass` renseigné, qui est exactement fait pour ça.
+
+`Exec=` pointe l'AppImage *là où le joueur l'a laissée* (`$APPIMAGE`, jamais `current_exe()` qui
+désigne le point de montage temporaire). Rien n'est déplacé dans `~/.local/bin` : bouger un
+fichier que le joueur vient de télécharger serait une surprise, et l'entrée est de toute façon
+réécrite au lancement suivant si le fichier a changé de place — une empreinte
+(`desktop-entry.json`) évite le travail inutile le reste du temps.
+
+Seule l'AppImage est concernée. Les paquets `.deb` et `.rpm` produits par tauri installent déjà
+leur propre entrée dans `/usr/share/applications`, qu'on ne peut pas corriger sans droits sur
+`/usr` ; et ils ne peuvent pas porter le bloc de provisioning, ce n'est donc pas par eux qu'un
+client est servi.
+
+## Un dossier de données par client
+
+Un seul launcher est compilé pour tous les clients du panel, et rien n'empêche un joueur
+d'installer celui de deux serveurs différents. Ses réglages, ses comptes, ses skins et ses caches
+sont donc rangés sous `clients/<clé du client>/`, dans chacune des racines de l'application
+(données, cache, journaux). Sans ce découpage, le second launcher installé écraserait les
+réglages du premier — et surtout les deux partageraient les jetons de session d'`accounts.json`.
+
+Deux exceptions volontaires :
+
+- **`provisioning.json`** reste à la racine commune : il faut savoir *quel* client avant de
+  pouvoir ouvrir son dossier ;
+- **la racine du jeu** reste désignée par le `dataDirectory` du panel. Elle pèse des gigaoctets,
+  et deux serveurs qui la partagent partagent aussi versions, bibliothèques et assets déjà
+  téléchargés.
+
+Une installation d'avant ce découpage est migrée une fois, au premier démarrage : tout ce qui
+traîne à la racine est déplacé sous le client — sauf les noms communs ci-dessus et les autres
+racines de l'application, que tauri imbrique parfois l'une dans l'autre (sous Linux `app_log_dir`
+est un sous-dossier d'`app_data_dir`, sous Windows d'`app_cache_dir`). La migration a lieu
+**avant** que le greffon de journalisation n'ouvre son fichier : Windows refuse de renommer un
+fichier ouvert.
 
 ## Données du panel
 
@@ -179,8 +237,9 @@ ligne.
 src-tauri/src/
   config.rs                 adresse du panel, défauts intégrés, chemins
   provisioning.rs           à quel client du panel ce launcher appartient
+  desktop.rs                entrée de bureau et icône XDG (Linux)
   api/                      client HTTP du panel + modèles tolérants + commandes remote_*
-  accounts/                 multi-comptes dans `<dossier du jeu>/accounts.json`
+  accounts/                 multi-comptes dans `<dossier du client>/accounts.json`
   auth.rs                   Microsoft (fenêtre de connexion), Azuriom/AZauth (+ OTP), hors ligne, Yggdrasil
   sessions.rs               renouvellement automatique des sessions en tâche de fond
   skins.rs                  textures skin/cape → data URL (cache disque)
@@ -221,10 +280,16 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --ignored     # API réelle, 
 
 ## Comptes et connexion Microsoft
 
-Les comptes (jetons compris) sont dans **`<dossier du jeu>/accounts.json`**
-(`data/minecraft/accounts.json` en debug), au format de `minecraft-java-core`, fichier lisible
-par l'utilisateur seul. Le fichier est versionné (`"version": 1`) pour accueillir un chiffrement
-ultérieur, et il suit le dossier d'installation choisi dans les paramètres.
+Les comptes (jetons compris) sont dans **`<dossier du client>/accounts.json`**, au format de
+`minecraft-java-core`, fichier lisible par l'utilisateur seul. Le fichier est versionné
+(`"version": 1`) pour accueillir un chiffrement ultérieur.
+
+Ils appartiennent au **client**, pas à l'installation du jeu : deux serveurs peuvent partager une
+racine de jeu — c'est même souhaitable, elle pèse des gigaoctets — mais sûrement pas les sessions
+Minecraft du joueur. Changer de dossier d'installation ne fait donc plus perdre ses comptes. Un
+`accounts.json` laissé à l'ancien emplacement (`<dossier du jeu>/accounts.json`) est **déplacé**
+au premier démarrage, pas copié : des jetons valides oubliés dans un dossier que le launcher ne
+lit plus seraient relus par un autre client.
 
 La connexion Microsoft utilise le flux *authorization code* de `crust_core` dans une **fenêtre de
 connexion** dédiée, avec le `client_id` publié par le panel sur `login.live.com` (ou l'identifiant

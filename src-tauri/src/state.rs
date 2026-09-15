@@ -57,7 +57,8 @@ impl AppState {
             .clone()
             .unwrap_or_else(|| config.data_directory.clone());
         let game_root = paths.game_root(settings.install_path().as_deref(), &data_directory);
-        let accounts = AccountStore::open(game_root);
+        adopt_legacy_accounts(&paths, &game_root);
+        let accounts = AccountStore::open(paths.launcher_dir.clone());
 
         Ok(Self {
             config,
@@ -91,10 +92,10 @@ impl AppState {
 
     pub fn replace_settings(&self, incoming: Settings) -> AppResult<Settings> {
         crate::settings::validate_incoming(&incoming)?;
-        let stored = self.update_settings(|settings| *settings = incoming)?;
-        // The accounts file lives at the game location: follow it.
-        self.accounts.relocate(self.game_root());
-        Ok(stored)
+        // Les comptes ne suivent plus la racine du jeu : ils appartiennent au
+        // client, pas à l'installation (voir `Paths::accounts_file`). Changer
+        // de dossier d'installation ne les déplace donc plus.
+        self.update_settings(|settings| *settings = incoming)
     }
 
     /// The Minecraft root directory for the current settings.
@@ -129,6 +130,38 @@ impl AppState {
 
     pub fn take_auth_cancel(&self) -> Option<Arc<Notify>> {
         self.auth_cancel.lock().expect("auth cancel mutex").take()
+    }
+}
+
+/// Remonte `accounts.json` de la racine du jeu vers le dossier du client.
+///
+/// Les comptes y vivaient tant qu'un launcher ne servait qu'un serveur. Depuis
+/// que les données sont rangées par client, la racine du jeu est le mauvais
+/// endroit : deux serveurs peuvent la partager — c'est même souhaitable, elle
+/// pèse des gigaoctets — et ils partageraient alors les jetons de session du
+/// joueur.
+///
+/// Déplacement et non copie : laisser l'ancien fichier derrière laisserait des
+/// jetons valides dans un dossier que le launcher ne lit plus, et qu'un autre
+/// client relirait au premier lancement. Un échec est silencieux, le joueur se
+/// reconnecte.
+fn adopt_legacy_accounts(paths: &Paths, game_root: &std::path::Path) {
+    let destination = paths.accounts_file();
+    if destination.exists() {
+        return;
+    }
+    let legacy = game_root.join(crate::accounts::ACCOUNTS_FILE);
+    if !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = destination.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    match std::fs::rename(&legacy, &destination) {
+        Ok(()) => log::info!("accounts moved to {}", destination.display()),
+        Err(error) => log::warn!("could not move {}: {error}", legacy.display()),
     }
 }
 

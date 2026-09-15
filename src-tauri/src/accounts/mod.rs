@@ -1,7 +1,10 @@
 //! Multi-account store.
 //!
 //! Accounts (with their `crust_core::authenticator::Account`, tokens included)
-//! live in one JSON file at the game location: `<game root>/accounts.json`.
+//! live in one JSON file in the client's own launcher directory (see
+//! `config::Paths::accounts_file`). They used to sit at the game root; they
+//! follow the client instead, because two servers may legitimately share a
+//! game root — it weighs gigabytes — but never the player's sessions.
 //! The file is written atomically and readable by the user only. Encryption
 //! at rest is planned on top of this format; the structure is versioned for it.
 //! Nothing sensitive ever reaches the webview: commands only return
@@ -149,7 +152,9 @@ struct AccountsFile {
 }
 
 pub struct AccountStore {
-    path: Mutex<PathBuf>,
+    /// Fixe pour la durée de l'exécution : le fichier appartient au client, que
+    /// rien ne change sans redémarrer (voir `provisioning::provisioning_set`).
+    path: PathBuf,
     accounts: Mutex<Vec<StoredAccount>>,
 }
 
@@ -164,30 +169,13 @@ impl AccountStore {
             accounts.len()
         );
         Self {
-            path: Mutex::new(path),
+            path,
             accounts: Mutex::new(accounts),
         }
     }
 
-    /// Points the store to another game location (install path changed).
-    pub fn relocate(&self, dir: PathBuf) {
-        let path = dir.join(ACCOUNTS_FILE);
-        let mut current = self.path.lock().expect("accounts path mutex");
-        if *current == path {
-            return;
-        }
-        let accounts = Self::read(&path);
-        log::info!(
-            "accounts file moved to {} ({} account(s))",
-            path.display(),
-            accounts.len()
-        );
-        *current = path;
-        *self.accounts.lock().expect("accounts mutex") = accounts;
-    }
-
     pub fn path(&self) -> PathBuf {
-        self.path.lock().expect("accounts path mutex").clone()
+        self.path.clone()
     }
 
     fn read(path: &PathBuf) -> Vec<StoredAccount> {
@@ -360,17 +348,21 @@ mod tests {
         assert!(account["addedAt"].is_number());
     }
 
+    /// Deux clients ne partagent pas leurs sessions : chacun ouvre son propre
+    /// fichier, dans son propre dossier (voir `config::Paths`).
     #[test]
-    fn relocate_reads_the_other_location() {
-        let first = temp_dir("first");
-        let second = temp_dir("second");
-        let store = AccountStore::open(first.clone());
-        store.upsert(Yggdrasil::offline("One")).unwrap();
-        store.relocate(second.clone());
-        assert!(store.list().is_empty());
-        store.upsert(Yggdrasil::offline("Two")).unwrap();
+    fn two_clients_keep_separate_accounts() {
+        let first = temp_dir("client-one");
+        let second = temp_dir("client-two");
+        let one = AccountStore::open(first.clone());
+        one.upsert(Yggdrasil::offline("One")).unwrap();
+
+        let two = AccountStore::open(second.clone());
+        assert!(two.list().is_empty(), "un client neuf n'hérite de rien");
+        two.upsert(Yggdrasil::offline("Two")).unwrap();
+
         assert!(second.join(ACCOUNTS_FILE).is_file());
-        store.relocate(first);
-        assert_eq!(store.list()[0].name, "One");
+        assert_eq!(AccountStore::open(first).list()[0].name, "One");
+        assert_eq!(AccountStore::open(second).list()[0].name, "Two");
     }
 }

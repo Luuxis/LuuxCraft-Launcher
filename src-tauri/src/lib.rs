@@ -14,6 +14,8 @@ mod auth;
 mod branding;
 mod commands;
 mod config;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod error;
 mod game;
 mod instances;
@@ -68,37 +70,52 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            let paths = Paths::resolve(app.handle())?;
-            paths.create_all()?;
-            app.handle()
-                .plugin(logging::plugin(paths.logs_dir.clone()))?;
+            let shared_paths = Paths::resolve(app.handle())?;
+            shared_paths.create_all()?;
 
             // Which client of the panel does this binary serve? One launcher
             // is built for everyone, so the answer is not compiled in: it is
             // appended to the installer at download time and read back here.
             // Not finding it is a normal state — the UI asks for a pairing
             // code — so it must never abort the startup.
+            //
+            // Résolu avant d'ouvrir le journal parce que la réponse décide
+            // *où* il s'ouvre : les données sont rangées par client, et la
+            // migration de l'installation héritée déplace des fichiers, ce que
+            // Windows refuse de faire sur un fichier déjà ouvert.
             let mut config = config.clone();
-            let provisioning_source = match provisioning::resolve(&paths.launcher_dir) {
-                Some((provisioning, source)) => {
-                    config.apply_provisioning(&provisioning);
-                    log::info!(
-                        "provisioned from {:?}: {} ({})",
-                        source,
-                        provisioning.key,
-                        provisioning.api_url
-                    );
-                    Some(source)
+            let resolved = provisioning::resolve(&shared_paths.shared_dir);
+            let block_brand = resolved.as_ref().and_then(|found| found.brand.clone());
+            let provisioning_source = match &resolved {
+                Some(found) => {
+                    config.apply_provisioning(&found.provisioning);
+                    Some(found.source)
                 }
-                None if config.is_provisioned() => {
-                    log::info!("provisioned at build time: {}", config.user_id);
-                    Some(provisioning::ProvisioningSource::BuiltIn)
-                }
-                None => {
-                    log::warn!("launcher not paired to a client yet, asking for a pairing code");
-                    None
-                }
+                None if config.is_provisioned() => Some(provisioning::ProvisioningSource::BuiltIn),
+                None => None,
             };
+
+            let paths = if config.is_provisioned() {
+                shared_paths.scoped_to(&config.user_id)
+            } else {
+                shared_paths
+            };
+            paths.create_all()?;
+            app.handle()
+                .plugin(logging::plugin(paths.logs_dir.clone()))?;
+
+            match (&resolved, provisioning_source) {
+                (Some(found), _) => log::info!(
+                    "provisioned from {:?}: {} ({})",
+                    found.source,
+                    found.provisioning.key,
+                    found.provisioning.api_url
+                ),
+                (None, Some(_)) => log::info!("provisioned at build time: {}", config.user_id),
+                (None, None) => {
+                    log::warn!("launcher not paired to a client yet, asking for a pairing code")
+                }
+            }
 
             let package = app.package_info();
             log::info!(
@@ -117,11 +134,22 @@ pub fn run() {
             // Nom et logo du client d'après le dernier snapshot connu : la
             // fenêtre s'ouvre déjà à la bonne identité, sans attendre le panel.
             // Elle sera rafraîchie à la première réponse de `/config`.
+            //
+            // Au tout premier démarrage il n'y a pas encore de snapshot : le
+            // nom lu dans le bloc de l'installeur prend alors le relais, ce qui
+            // fait qu'une première ouverture hors ligne porte quand même le nom
+            // du serveur. Le snapshot reste prioritaire — il est plus récent.
             let cached = state.cached_snapshot();
+            let cached_name = cached
+                .as_ref()
+                .and_then(|snapshot| snapshot.config.brand.as_ref())
+                .and_then(|brand| brand.name.clone())
+                .or_else(|| block_brand.as_ref().map(|brand| brand.name.clone()));
             branding::apply_cached(
                 app.handle(),
-                cached.as_ref().and_then(|snapshot| snapshot.config.brand.as_ref()),
+                cached_name.as_deref(),
                 &state.paths.launcher_dir,
+                &state.config.user_id,
             );
 
             app.manage(state);

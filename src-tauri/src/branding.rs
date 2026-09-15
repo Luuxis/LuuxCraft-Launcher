@@ -20,6 +20,9 @@
 //!   pouvait pas faire — réécrire `brand.ico` s'il n'a pas pu le télécharger, et
 //!   renommer le raccourci du Bureau, que tauri crée *après* le hook quand le
 //!   joueur coche la case de la page finale.
+//! - **Linux** : il n'y a pas d'installeur du tout, une AppImage n'étant qu'un
+//!   fichier exécutable. C'est donc ici, au démarrage, que l'entrée de bureau
+//!   et l'icône du thème sont posées — voir `desktop`.
 
 use std::path::{Path, PathBuf};
 
@@ -40,15 +43,48 @@ const MAX_ICON_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// Appelé au démarrage, avant toute requête, pour que la fenêtre ne s'affiche
 /// jamais sous le nom du launcher compilé le temps d'un aller-retour réseau.
-pub fn apply_cached(app: &AppHandle, brand: Option<&RemoteBrand>, launcher_dir: &Path) {
-    let name = brand.and_then(|brand| brand.name.as_deref());
+pub fn apply_cached(app: &AppHandle, name: Option<&str>, launcher_dir: &Path, client_key: &str) {
     set_title(app, name);
 
     let cached = launcher_dir.join(CACHED_ICON);
-    let Ok(bytes) = std::fs::read(&cached) else {
-        return;
-    };
-    set_icon(app, &bytes);
+    let bytes = std::fs::read(&cached).ok();
+    if let Some(bytes) = bytes.as_deref() {
+        set_icon(app, bytes);
+    }
+
+    // Linux : refaite dès le démarrage, et pas seulement après la réponse du
+    // panel, pour qu'un premier lancement hors ligne laisse quand même une
+    // entrée dans le menu d'applications.
+    refresh_desktop_entry(app, launcher_dir, client_key, name, bytes.as_deref());
+}
+
+/// Linux : pose ou met à jour l'entrée de bureau du client (voir `desktop`).
+///
+/// Sans nom, rien n'est écrit — une entrée au nom du launcher compilé n'aurait
+/// aucun intérêt pour le joueur, et écraserait celle du démarrage précédent.
+#[cfg(target_os = "linux")]
+fn refresh_desktop_entry(
+    app: &AppHandle,
+    launcher_dir: &Path,
+    client_key: &str,
+    name: Option<&str>,
+    icon: Option<&[u8]>,
+) {
+    if let Some(name) = name {
+        crate::desktop::refresh(app, launcher_dir, client_key, name, icon);
+    }
+}
+
+/// Ailleurs, l'identité est portée par le conteneur : l'installeur NSIS sous
+/// Windows, le bundle `.app` sous macOS.
+#[cfg(not(target_os = "linux"))]
+fn refresh_desktop_entry(
+    _app: &AppHandle,
+    _launcher_dir: &Path,
+    _client_key: &str,
+    _name: Option<&str>,
+    _icon: Option<&[u8]>,
+) {
 }
 
 /// Rafraîchit l'identité depuis le panel : titre, logo téléchargé et mis en
@@ -60,12 +96,17 @@ pub async fn refresh(
     app: AppHandle,
     http: reqwest::Client,
     launcher_dir: PathBuf,
+    client_key: String,
     brand: Option<RemoteBrand>,
 ) {
     let brand = brand.unwrap_or_default();
     set_title(&app, brand.name.as_deref());
 
     let Some(url) = brand.icon_url.as_deref() else {
+        // Sans logo, l'entrée de bureau garde quand même le nom du client :
+        // une entrée sans icône vaut mieux qu'une entrée au nom du launcher
+        // compilé.
+        refresh_desktop_entry(&app, &launcher_dir, &client_key, brand.name.as_deref(), None);
         return;
     };
 
@@ -88,6 +129,14 @@ pub async fn refresh(
 
     #[cfg(target_os = "windows")]
     refresh_windows_assets(&app, brand.name.as_deref(), &bytes);
+
+    refresh_desktop_entry(
+        &app,
+        &launcher_dir,
+        &client_key,
+        brand.name.as_deref(),
+        Some(&bytes),
+    );
 }
 
 async fn download(http: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
