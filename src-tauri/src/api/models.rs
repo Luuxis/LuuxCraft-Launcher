@@ -21,8 +21,30 @@ pub struct RemoteConfig {
     pub links: Vec<Link>,
     /// Module toggles published by the panel (`modules`, `features`).
     pub modules: Map<String, Value>,
+    /// Launcher identity published by the panel. Anything missing falls back
+    /// to the built-in brand, which is what the title bar paints before the
+    /// first request completes.
+    pub brand: Option<RemoteBrand>,
+    /// Tauri updater endpoints published by the panel; they take precedence
+    /// over the built-in ones so a release can be pointed elsewhere.
+    pub updater_endpoints: Vec<String>,
+    /// Yggdrasil-compatible server (authlib-injector style) enabling that
+    /// extra sign-in method.
+    pub yggdrasil: Option<String>,
     /// Every field the launcher does not model, for future panel features.
     pub extra: Map<String, Value>,
+}
+
+/// Launcher identity: `LuuxCraft` in the title bar is `prefix` + `suffix`,
+/// the suffix being the part painted in the brand gradient.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBrand {
+    pub name: Option<String>,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub subtitle: Option<String>,
+    pub website: Option<String>,
 }
 
 /// How players sign in, decided by the panel's `online` field:
@@ -228,6 +250,13 @@ impl RemoteConfig {
         "links",
         "modules",
         "features",
+        "brand",
+        "updater",
+        "updaterEndpoints",
+        "updater_endpoints",
+        "yggdrasil",
+        "yggdrasilServer",
+        "yggdrasil_server",
     ];
 
     pub fn from_value(value: Value) -> Result<Self, String> {
@@ -269,9 +298,51 @@ impl RemoteConfig {
             client_id: pick_string(object, &["client_id", "clientId"]),
             links,
             modules,
+            brand: RemoteBrand::from_object(object),
+            updater_endpoints: updater_endpoints(object),
+            yggdrasil: pick_string(
+                object,
+                &["yggdrasil", "yggdrasilServer", "yggdrasil_server"],
+            )
+            .filter(|url| url.starts_with("https://") || url.starts_with("http://")),
             extra: remaining(object, Self::KNOWN),
         })
     }
+}
+
+impl RemoteBrand {
+    /// Accepts `{"name": …, "wordmark": {"prefix": …, "suffix": …}}` as well as
+    /// a flat `{"name": …, "prefix": …, "suffix": …}`.
+    fn from_object(object: &Map<String, Value>) -> Option<Self> {
+        let brand = pick_object(object, &["brand"])?;
+        let wordmark = pick_object(brand, &["wordmark"]).unwrap_or(brand);
+        let parsed = Self {
+            name: pick_string(brand, &["name", "title"]),
+            prefix: pick_string(wordmark, &["prefix"]),
+            suffix: pick_string(wordmark, &["suffix"]),
+            subtitle: pick_string(brand, &["subtitle", "tagline"]),
+            website: pick_string(brand, &["website", "url", "site"]),
+        };
+        (parsed != Self::default()).then_some(parsed)
+    }
+}
+
+/// `"updater": {"endpoints": [...]}`, `"updater": "https://…"` or a flat
+/// `"updaterEndpoints": [...]`; only https URLs are kept.
+fn updater_endpoints(object: &Map<String, Value>) -> Vec<String> {
+    let mut found = match pick(object, &["updater"]) {
+        Some(Value::Object(updater)) => {
+            pick_string_list(updater, &["endpoints", "urls", "endpoint", "url"])
+        }
+        Some(Value::String(url)) => vec![url.trim().to_owned()],
+        Some(Value::Array(_)) => pick_string_list(object, &["updater"]),
+        _ => Vec::new(),
+    };
+    if found.is_empty() {
+        found = pick_string_list(object, &["updaterEndpoints", "updater_endpoints"]);
+    }
+    found.retain(|url| url.starts_with("https://"));
+    found
 }
 
 impl Link {
@@ -592,6 +663,54 @@ mod tests {
         assert_eq!(config.auth, AuthMode::Microsoft);
         assert_eq!(config.client_id.as_deref(), Some("13f589e1"));
         assert!(config.links.is_empty());
+        // A panel that publishes none of the optional blocks stays valid.
+        assert!(config.brand.is_none());
+        assert!(config.updater_endpoints.is_empty());
+        assert!(config.yggdrasil.is_none());
+    }
+
+    #[test]
+    fn reads_the_optional_launcher_blocks() {
+        let config = RemoteConfig::from_value(json!({
+            "online": true,
+            "brand": {
+                "name": "LuuxCraft",
+                "wordmark": { "prefix": "Luux", "suffix": "Craft" },
+                "subtitle": "Launcher",
+                "website": "https://luuxcraft.fr"
+            },
+            "updater": { "endpoints": ["https://luuxcraft.fr/launcher/latest.json", "http://insecure"] },
+            "yggdrasil": "https://auth.luuxcraft.fr",
+            "modules": { "news": true, "skins": false }
+        }))
+        .unwrap();
+        let brand = config.brand.expect("brand");
+        assert_eq!(brand.name.as_deref(), Some("LuuxCraft"));
+        assert_eq!(brand.prefix.as_deref(), Some("Luux"));
+        assert_eq!(brand.suffix.as_deref(), Some("Craft"));
+        assert_eq!(brand.website.as_deref(), Some("https://luuxcraft.fr"));
+        // Only https endpoints are kept.
+        assert_eq!(
+            config.updater_endpoints,
+            vec!["https://luuxcraft.fr/launcher/latest.json"]
+        );
+        assert_eq!(config.yggdrasil.as_deref(), Some("https://auth.luuxcraft.fr"));
+        assert_eq!(config.modules.get("skins"), Some(&json!(false)));
+        // Modelled blocks never leak into `extra`.
+        assert!(config.extra.is_empty());
+    }
+
+    #[test]
+    fn accepts_a_flat_brand_and_a_single_updater_url() {
+        let config = RemoteConfig::from_value(json!({
+            "brand": { "prefix": "Mon", "suffix": "Serveur" },
+            "updater": "https://example.com/latest.json"
+        }))
+        .unwrap();
+        let brand = config.brand.expect("brand");
+        assert_eq!(brand.prefix.as_deref(), Some("Mon"));
+        assert_eq!(brand.name, None);
+        assert_eq!(config.updater_endpoints, vec!["https://example.com/latest.json"]);
     }
 
     #[test]

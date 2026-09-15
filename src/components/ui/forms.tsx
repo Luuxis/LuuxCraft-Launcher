@@ -2,7 +2,8 @@
  * Form controls: labelled fields, inputs, password, custom select, slider,
  * toggle and option cards. Visuals follow the charter (§9.2).
  */
-import { useEffect, useId, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { Icon } from "./Icon";
 
@@ -91,31 +92,85 @@ interface SelectProps<T extends string> {
   className?: string;
 }
 
+/** Space between the trigger and its dropdown, and margin kept from the window edges. */
+const DROPDOWN_GAP = 6;
+const DROPDOWN_EDGE = 12;
+const DROPDOWN_MAX_HEIGHT = 256;
+
+interface DropdownBox {
+  left: number;
+  width: number;
+  top?: number;
+  bottom?: number;
+  maxHeight: number;
+}
+
+function measureDropdown(trigger: HTMLElement): DropdownBox {
+  const rect = trigger.getBoundingClientRect();
+  const below = window.innerHeight - rect.bottom - DROPDOWN_GAP - DROPDOWN_EDGE;
+  const above = rect.top - DROPDOWN_GAP - DROPDOWN_EDGE;
+  // Open upwards only when that genuinely leaves more room.
+  const up = below < 180 && above > below;
+  return {
+    left: rect.left,
+    width: rect.width,
+    top: up ? undefined : rect.bottom + DROPDOWN_GAP,
+    bottom: up ? window.innerHeight - rect.top + DROPDOWN_GAP : undefined,
+    maxHeight: Math.max(120, Math.min(DROPDOWN_MAX_HEIGHT, up ? above : below)),
+  };
+}
+
 export function Select<T extends string>({ value, options, onChange, placeholder, disabled, id, className = "" }: SelectProps<T>) {
   const [open, setOpen] = useState(false);
-  const container = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<DropdownBox | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const dropdown = useRef<HTMLUListElement>(null);
   const listId = useId();
   const current = options.find((option) => option.value === value) ?? null;
 
+  // The list is portalled to `document.body` so a card with `overflow: hidden`
+  // can no longer clip it — it stays fully visible and scrollable.
+  const reposition = useCallback(() => {
+    if (trigger.current) setBox(measureDropdown(trigger.current));
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) reposition();
+    else setBox(null);
+  }, [open, reposition]);
+
   useEffect(() => {
     if (!open) return;
-    const onClick = (event: MouseEvent) => {
-      if (container.current && !container.current.contains(event.target as Node)) setOpen(false);
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (trigger.current?.contains(target) || dropdown.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
+    // Follow the trigger when the page behind scrolls (the dropdown itself is
+    // excluded, otherwise scrolling the list would fight with repositioning).
+    const onScroll = (event: Event) => {
+      if (dropdown.current?.contains(event.target as Node)) return;
+      reposition();
     };
-  }, [open]);
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open, reposition]);
 
   return (
-    <div ref={container} className={`relative ${className}`}>
+    <div className={`relative ${className}`}>
       <button
+        ref={trigger}
         type="button"
         id={id}
         className="select-trigger"
@@ -136,48 +191,57 @@ export function Select<T extends string>({ value, options, onChange, placeholder
           style={{ color: open ? "var(--brand-primary)" : "var(--text-meta)" }}
         />
       </button>
-      {open ? (
-        <ul id={listId} role="listbox" className="select-dropdown custom-scrollbar mt-1.5">
-          {options.length === 0 ? (
-            <li className="py-5 px-3 text-center text-[13px]" style={{ color: "var(--text-meta)" }}>
-              —
-            </li>
-          ) : null}
-          {options.map((option) => (
-            <li key={option.value} role="option" aria-selected={option.value === value}>
-              <button
-                type="button"
-                className="select-option"
-                aria-selected={option.value === value}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-              >
-                <span
-                  className="w-4 h-4 rounded-md border flex items-center justify-center shrink-0"
-                  style={{
-                    background: option.value === value ? "var(--brand-primary)" : "transparent",
-                    borderColor: option.value === value ? "var(--brand-primary)" : "var(--border)",
-                    color: option.value === value ? "#ffffff" : "transparent",
-                  }}
-                >
-                  <Icon name="check" size={12} />
-                </span>
-                {option.icon ? <Icon name={option.icon} size={18} style={{ color: "var(--text-meta)" }} /> : null}
-                <span className="flex-1 min-w-0">
-                  <span className="block truncate">{option.label}</span>
-                  {option.description ? (
-                    <span className="block text-[11px] truncate" style={{ color: "var(--text-meta)" }}>
-                      {option.description}
+      {open && box
+        ? createPortal(
+            <ul
+              ref={dropdown}
+              id={listId}
+              role="listbox"
+              className="select-dropdown custom-scrollbar"
+              style={{ left: box.left, width: box.width, top: box.top, bottom: box.bottom, maxHeight: box.maxHeight }}
+            >
+              {options.length === 0 ? (
+                <li className="py-5 px-3 text-center text-[13px]" style={{ color: "var(--text-meta)" }}>
+                  —
+                </li>
+              ) : null}
+              {options.map((option) => (
+                <li key={option.value} role="option" aria-selected={option.value === value}>
+                  <button
+                    type="button"
+                    className="select-option"
+                    aria-selected={option.value === value}
+                    onClick={() => {
+                      onChange(option.value);
+                      setOpen(false);
+                    }}
+                  >
+                    <span
+                      className="w-4 h-4 rounded-md border flex items-center justify-center shrink-0"
+                      style={{
+                        background: option.value === value ? "var(--brand-primary)" : "transparent",
+                        borderColor: option.value === value ? "var(--brand-primary)" : "var(--border)",
+                        color: option.value === value ? "#ffffff" : "transparent",
+                      }}
+                    >
+                      <Icon name="check" size={12} />
                     </span>
-                  ) : null}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+                    {option.icon ? <Icon name={option.icon} size={18} style={{ color: "var(--text-meta)" }} /> : null}
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate">{option.label}</span>
+                      {option.description ? (
+                        <span className="block text-[11px] truncate" style={{ color: "var(--text-meta)" }}>
+                          {option.description}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

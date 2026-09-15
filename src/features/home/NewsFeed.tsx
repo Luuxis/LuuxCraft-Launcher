@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 
 import { t } from "../../i18n";
 import { formatDate, textPreview } from "../../lib/format";
@@ -51,9 +51,27 @@ function ArticleCard({ article }: { article: Article }) {
   const { openExternal } = useActions();
   const [expanded, setExpanded] = useState(false);
   const html = useMemo(() => sanitizeHtml(article.content), [article.content]);
-  const preview = useMemo(() => textPreview(article.content, 220), [article.content]);
+  const empty = useMemo(() => textPreview(article.content, 8).length === 0 && !/<img/i.test(article.content), [article.content]);
   const date = formatDate(article.publishedAt);
-  const long = preview.length >= 220 || /<(img|h[1-6]|ul|ol|table)/i.test(article.content);
+
+  // Replié, l'article garde sa mise en forme finale et est simplement rogné :
+  // on mesure donc le contenu réel au lieu de compter les caractères.
+  const clip = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    if (expanded) return; // Déplié, la dernière mesure fait foi (sinon le bouton « Réduire » disparaîtrait).
+    const clipped = clip.current;
+    const content = body.current;
+    if (!clipped || !content) return;
+    const measure = () => setOverflowing(content.scrollHeight > clipped.clientHeight + 4);
+    measure();
+    // Les images de l'article arrivent après coup et changent la hauteur.
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [html, expanded]);
 
   const onContentClick = (event: MouseEvent<HTMLDivElement>) => {
     const anchor = (event.target as HTMLElement).closest("a");
@@ -91,12 +109,14 @@ function ArticleCard({ article }: { article: Article }) {
         {article.url ? <IconButton icon="open_in_new" label={t("common.open")} size={16} onClick={() => void openExternal(article.url!)} /> : null}
       </div>
       <div className="px-4 py-3">
-        {expanded ? (
-          <div className="rich-content" dangerouslySetInnerHTML={{ __html: html }} onClick={onContentClick} />
+        {empty ? (
+          <p className="rich-content">—</p>
         ) : (
-          <p className="rich-content">{preview || "—"}</p>
+          <div ref={clip} className={expanded ? undefined : `article-clip ${overflowing ? "is-clipped" : ""}`}>
+            <div ref={body} className="rich-content" dangerouslySetInnerHTML={{ __html: html }} onClick={onContentClick} />
+          </div>
         )}
-        {long ? (
+        {overflowing ? (
           <div className="mt-2">
             <Button variant="ghost" size="xs" iconRight={expanded ? "expand_less" : "expand_more"} onClick={() => setExpanded((e) => !e)}>
               {expanded ? t("home.readLess") : t("home.readMore")}

@@ -13,16 +13,20 @@ import type {
   AuthMethods,
   AzAuthOutcome,
   Bootstrap,
+  CapeOption,
   Instance,
   InstanceStatus,
   JavaInstall,
   JavaRequirement,
   LaunchEvent,
+  LibrarySkin,
+  ProvisioningStatus,
   RemoteSnapshot,
   RunningGame,
   ServerStatus,
   Settings,
   SkinData,
+  SkinVariant,
   SystemInfo,
   UpdateCheck,
   UpdateEvent,
@@ -44,6 +48,13 @@ export function toAppError(error: unknown): AppError {
   return { code: "unknown", message: String(error) };
 }
 
+/** The editable state of a library skin, as the editor holds it. */
+export interface SkinDraft {
+  name: string;
+  variant: SkinVariant;
+  capeId: string | null;
+}
+
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try {
     return await invoke<T>(command, args);
@@ -59,6 +70,17 @@ export const ipc = {
   gameRoot: () => call<string>("game_root"),
   openFolder: (target: string) => call<void>("open_folder", { target }),
   openExternal: (url: string) => call<void>("open_external", { url }),
+
+  // ── Provisioning (which client of the panel this launcher serves)
+  provisioningStatus: () => call<ProvisioningStatus>("provisioning_status"),
+  /**
+   * Pairs the launcher with a client key. The backend checks the code against
+   * the panel before saving it, then restarts the launcher — so this call
+   * either throws or never returns.
+   */
+  provisioningSet: (code: string) => call<void>("provisioning_set", { code }),
+  /** Forgets the pairing and restarts on the pairing screen. */
+  provisioningForget: () => call<void>("provisioning_forget"),
 
   // ── Settings
   settingsGet: () => call<Settings>("settings_get"),
@@ -92,6 +114,23 @@ export const ipc = {
   onAccountsChanged: (handler: (accounts: AccountSummary[]) => void): Promise<UnlistenFn> =>
     listen<AccountSummary[]>("accounts://changed", (event) => handler(event.payload)),
   skinGet: (uuid: string, refresh = false) => call<SkinData>("skin_get", { uuid, refresh }),
+
+  // ── Skin library
+  skinLibraryList: () => call<LibrarySkin[]>("skin_library_list"),
+  /** Reads a picked PNG as a data URL without storing it (editor preview). */
+  skinFilePreview: (path: string) => call<string>("skin_file_preview", { path }),
+  skinCapesList: (uuid: string) => call<CapeOption[]>("skin_capes_list", { uuid }),
+  skinLibraryImport: (path: string, draft: SkinDraft) =>
+    call<LibrarySkin>("skin_library_import", { path, name: draft.name, variant: draft.variant, capeId: draft.capeId }),
+  skinLibraryAddCurrent: (uuid: string, name?: string) =>
+    call<LibrarySkin>("skin_library_add_current", { uuid, name: name ?? null }),
+  /** Saves the whole editable state; `path` replaces the texture. */
+  skinLibraryUpdate: (id: string, draft: SkinDraft, path: string | null = null) =>
+    call<LibrarySkin>("skin_library_update", { id, name: draft.name, variant: draft.variant, capeId: draft.capeId, path }),
+  skinLibraryRemove: (id: string) => call<void>("skin_library_remove", { id }),
+  /** Uploads a library skin to the Minecraft profile of the account. */
+  skinApply: (uuid: string, id: string) => call<SkinData>("skin_apply", { uuid, id }),
+  skinReset: (uuid: string) => call<SkinData>("skin_reset", { uuid }),
 
   // ── Java
   javaDetect: () => call<JavaInstall[]>("java_detect"),

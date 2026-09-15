@@ -1,24 +1,108 @@
 name: 'publish'
 
+# Un seul launcher est compilé pour tous les clients. Ce workflow publie donc
+# UNE release globale vers le panel, qui :
+#   - sert les artefacts de mise à jour intacts à `tauri-plugin-updater` ;
+#   - ajoute la configuration de chaque client à l'installeur au téléchargement.
+#
+# Rien n'est compilé par client, et aucune release GitHub n'est créée : les
+# octets vivent dans le R2 du panel, qui les sert.
+#
+# À configurer une fois sur le dépôt :
+#   Variables  PANEL_URL                          https://luuxcraft.fr
+#   Secrets    PANEL_BUILD_KEY                    Admin → Configuration → Builds du launcher
+#              TAURI_SIGNING_PRIVATE_KEY          contenu de ~/.tauri/luuxcraft-launcher.key
+#              TAURI_SIGNING_PRIVATE_KEY_PASSWORD vide si la clé n'en a pas
+#
+# Sans la clé de signature, les artefacts de mise à jour partent sans signature
+# et le panel refuse de publier la release — c'est voulu : une signature
+# manquante ne se verrait sinon qu'au moment où un joueur tente la mise à jour,
+# après avoir téléchargé le paquet en entier.
+
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Canal de diffusion'
+        type: choice
+        options: ['stable', 'beta']
+        default: 'stable'
+      notes:
+        description: 'Notes de version montrées dans le launcher'
+        type: string
+        default: ''
+      publish:
+        description: 'Publier à la fin (sinon la release reste en préparation)'
+        type: boolean
+        default: true
+  push:
+    tags: ['v*']
+
+# Rien n'écrit dans le dépôt : aucune release GitHub n'est créée, les artefacts
+# partent vers le panel.
+permissions:
+  contents: read
+
+concurrency:
+  # Une version à la fois : deux exécutions concurrentes sur la même version se
+  # marcheraient sur les pieds au moment de publier.
+  group: launcher-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PANEL_URL: ${{ vars.PANEL_URL }}
+  PANEL_BUILD_KEY: ${{ secrets.PANEL_BUILD_KEY }}
 
 jobs:
-  publish-tauri:
-    permissions:
-      contents: write
+  # La release doit exister avant que les jobs de la matrice n'y rattachent
+  # leurs artefacts.
+  open-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.open.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: open the release on the panel
+        id: open
+        env:
+          RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          node .github/scripts/panel-release.mjs open
+          echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: open-release
     strategy:
+      # Sans fail-fast, une plateforme qui casse laisse les autres finir : la
+      # release reste en préparation et il suffit de rejouer le job fautif.
       fail-fast: false
       matrix:
         include:
+          # `target` et `arch` sont les valeurs que `tauri-plugin-updater`
+          # substitue dans `{{target}}` et `{{arch}}` : le panel les range
+          # telles quelles pour que le manifeste de mise à jour tombe pile.
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            target: 'darwin'
+            arch: 'aarch64'
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
+            target: 'darwin'
+            arch: 'x86_64'
           - platform: 'ubuntu-latest'
             args: ''
+            target: 'linux'
+            arch: 'x86_64'
           - platform: 'windows-latest'
             args: ''
+            target: 'windows'
+            arch: 'x86_64'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -45,18 +129,64 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          # Deux jobs macOS partagent le runner mais pas la cible : sans clé
+          # distincte, ils s'écrasent mutuellement le cache.
+          key: ${{ matrix.target }}-${{ matrix.arch }}
 
       - name: install frontend dependencies
         run: npm install
 
-      - uses: tauri-apps/tauri-action@v1
+      - name: build the launcher
+        id: build
+        uses: tauri-apps/tauri-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Sans `tagName`, l'action ne crée aucune release GitHub : elle
+          # construit, signe, et expose les chemins produits.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: 'App v__VERSION__'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
-          prerelease: false
           args: ${{ matrix.args }}
+
+      - name: upload the artifacts to the panel
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build.outputs.artifactPaths }}
+          ARTIFACT_TARGET: ${{ matrix.target }}
+          ARTIFACT_ARCH: ${{ matrix.arch }}
+        run: node .github/scripts/panel-release.mjs upload
+
+  # C'est `needs` qui donne le « tout ou rien » par plateforme : un job de build
+  # en échec fait échouer `build`, et rien n'est publié. Le panel, lui, refuse en
+  # plus un artefact dont les octets manquent ou un artefact de mise à jour sans
+  # signature.
+  publish-release:
+    # `open-release` est dans les besoins pour son `outputs.version`, repris
+    # dans le résumé.
+    needs: [open-release, build]
+    # Un push de tag publie toujours. Le test ne peut pas s'écrire
+    # `inputs.publish != false` : hors `workflow_dispatch` l'entrée est nulle,
+    # et GitHub convertit `null` et `false` en 0 — la comparaison serait fausse
+    # et un tag ne publierait jamais rien.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: publish the release
+        run: node .github/scripts/panel-release.mjs publish
+
+      - name: summary
+        run: |
+          {
+            echo "### Launcher ${{ needs.open-release.outputs.version }} publié"
+            echo
+            echo "Canal : \`${{ inputs.channel || 'stable' }}\`"
+            echo
+            echo "Les launchers installés verront la mise à jour à leur prochain démarrage."
+            echo "Les nouveaux téléchargements passent par \`/api/launcher/download/<code client>/<plateforme>\`,"
+            echo "qui ajoute la configuration du client à l'installeur."
+          } >> "$GITHUB_STEP_SUMMARY"

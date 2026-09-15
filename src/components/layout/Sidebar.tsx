@@ -15,7 +15,6 @@ interface NavModule {
 /** The navigation is a registry filtered by the module toggles of the panel. */
 const NAV_MODULES: NavModule[] = [
   { id: "home", module: "home", icon: "space_dashboard", label: "nav.home" },
-  { id: "instances", module: "instances", icon: "tune", label: "nav.instances" },
   { id: "accounts", module: "accounts", icon: "manage_accounts", label: "nav.accounts" },
   { id: "skins", module: "skins", icon: "person", label: "nav.skins" },
   { id: "settings", module: "settings", icon: "settings", label: "nav.settings" },

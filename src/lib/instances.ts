@@ -50,13 +50,12 @@ export function loaderIcon(kind: string): string {
   return LOADER_ICONS[kind.trim().toLowerCase()] ?? "deployed_code";
 }
 
-/** Module toggles: launcher defaults overridden by the panel, `false` hides. */
-export function moduleEnabled(
-  name: string,
-  defaults: Record<string, unknown>,
-  remote: Record<string, unknown> | undefined,
-): boolean {
-  const value = remote && name in remote ? remote[name] : defaults[name];
+/**
+ * Module toggles published by the panel. A module the panel says nothing about
+ * is shown: the launcher ships no defaults of its own.
+ */
+export function moduleEnabled(name: string, remote: Record<string, unknown> | undefined): boolean {
+  const value = remote?.[name];
   if (value === undefined || value === null) return true;
   if (typeof value === "boolean") return value;
   if (typeof value === "object") {

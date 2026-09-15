@@ -1,6 +1,7 @@
 //! LuuxCraft launcher backend.
 //!
 //! Responsibilities are split by module: `config` (central configuration),
+//! `provisioning` (which client of the panel this launcher serves),
 //! `api` (panel client and models), `accounts`/`auth`/`sessions`
 //! (multi-account, sign-in flows and automatic renewal), `skins`,
 //! `instances`/`game` (install and launch through `crust_core`), `java`,
@@ -16,6 +17,7 @@ mod game;
 mod instances;
 mod java;
 mod logging;
+mod provisioning;
 mod sessions;
 mod settings;
 mod skins;
@@ -68,6 +70,34 @@ pub fn run() {
             paths.create_all()?;
             app.handle()
                 .plugin(logging::plugin(paths.logs_dir.clone()))?;
+
+            // Which client of the panel does this binary serve? One launcher
+            // is built for everyone, so the answer is not compiled in: it is
+            // appended to the installer at download time and read back here.
+            // Not finding it is a normal state — the UI asks for a pairing
+            // code — so it must never abort the startup.
+            let mut config = config.clone();
+            let provisioning_source = match provisioning::resolve(&paths.launcher_dir) {
+                Some((provisioning, source)) => {
+                    config.apply_provisioning(&provisioning);
+                    log::info!(
+                        "provisioned from {:?}: {} ({})",
+                        source,
+                        provisioning.key,
+                        provisioning.api_url
+                    );
+                    Some(source)
+                }
+                None if config.is_provisioned() => {
+                    log::info!("provisioned at build time: {}", config.user_id);
+                    Some(provisioning::ProvisioningSource::BuiltIn)
+                }
+                None => {
+                    log::warn!("launcher not paired to a client yet, asking for a pairing code");
+                    None
+                }
+            };
+
             let package = app.package_info();
             log::info!(
                 "{} {} starting on {} {} (crust_core {})",
@@ -78,11 +108,15 @@ pub fn run() {
                 "1.0.3"
             );
             log::info!("launcher data: {}", paths.launcher_dir.display());
-            let state = AppState::new(config, paths)?;
+            let state = AppState::new(config, provisioning_source, paths)?;
             log::info!("game root: {}", state.game_root().display());
+            let paired = state.config.is_provisioned();
             app.manage(state);
-            // Keeps the stored sessions valid while the launcher runs.
-            sessions::spawn(app.handle().clone());
+            // Nothing to renew before the launcher knows which panel to ask.
+            if paired {
+                // Keeps the stored sessions valid while the launcher runs.
+                sessions::spawn(app.handle().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -91,6 +125,9 @@ pub fn run() {
             commands::settings_update,
             commands::settings_reset,
             commands::game_root,
+            provisioning::provisioning_status,
+            provisioning::provisioning_set,
+            provisioning::provisioning_forget,
             api::remote_fetch,
             api::remote_articles,
             api::remote_cached,
@@ -105,6 +142,15 @@ pub fn run() {
             auth::accounts_remove,
             auth::accounts_refresh,
             skins::skin_get,
+            skins::skin_library_list,
+            skins::skin_file_preview,
+            skins::skin_capes_list,
+            skins::skin_library_import,
+            skins::skin_library_add_current,
+            skins::skin_library_update,
+            skins::skin_library_remove,
+            skins::skin_apply,
+            skins::skin_reset,
             java::java_detect,
             java::java_probe,
             java::java_required,

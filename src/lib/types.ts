@@ -1,7 +1,24 @@
 /**
  * DTOs shared with the Rust backend (serde `camelCase`).
  */
-import type { LauncherConfig } from "../config/launcher";
+
+/**
+ * The launcher's own identity and defaults, built in the backend (see
+ * `config.rs`). Everything the panel publishes lives in `RemoteConfig`
+ * instead; this only carries what the API cannot provide about itself.
+ */
+export interface LauncherConfig {
+  userId: string;
+  api: { baseUrl: string; timeoutSeconds: number };
+  dataDirectory: string;
+  updater: { endpoints: string[] };
+  auth: { yggdrasilServer: string | null };
+  news: { limit: number };
+  serverStatus: { refreshSeconds: number; timeoutMs: number };
+  downloads: { defaultConcurrency: number; maxConcurrency: number };
+  memory: { defaultMinMb: number; defaultMaxMb: number };
+  gameWindow: { defaultWidth: number; defaultHeight: number };
+}
 
 export interface AppError {
   code: string;
@@ -92,6 +109,15 @@ export interface Link {
   order: number | null;
 }
 
+/** Launcher identity published by the panel; every field is optional. */
+export interface RemoteBrand {
+  name: string | null;
+  prefix: string | null;
+  suffix: string | null;
+  subtitle: string | null;
+  website: string | null;
+}
+
 export interface RemoteConfig {
   maintenance: boolean;
   maintenanceMessage: string | null;
@@ -100,6 +126,9 @@ export interface RemoteConfig {
   clientId: string | null;
   links: Link[];
   modules: Record<string, unknown>;
+  brand: RemoteBrand | null;
+  updaterEndpoints: string[];
+  yggdrasil: string | null;
   extra: Record<string, unknown>;
 }
 
@@ -241,12 +270,26 @@ export interface SystemInfo {
   debug: boolean;
 }
 
+/** Where the launcher found out which client of the panel it serves. */
+export type ProvisioningSource = "executable" | "installer" | "persisted" | "builtIn";
+
+export interface ProvisioningStatus {
+  /** `false` on a generic build that has not been paired yet. */
+  provisioned: boolean;
+  source: ProvisioningSource | null;
+  /** Panel the launcher talks to, without the client key. */
+  apiUrl: string;
+  /** Client key, so the player can read it back from the settings. */
+  key: string | null;
+}
+
 export interface Bootstrap {
   config: LauncherConfig;
   settings: Settings;
   accounts: AccountSummary[];
   system: SystemInfo;
   paths: { launcherDir: string; logsDir: string; gameRoot: string };
+  provisioning: ProvisioningStatus;
 }
 
 export interface SkinData {
@@ -257,4 +300,27 @@ export interface SkinData {
   model: "default" | "slim" | "auto";
   capeAlias: string | null;
   source: AccountKind;
+  /** Whether the skin of this account can be changed from the launcher. */
+  canChange: boolean;
+}
+
+export type SkinVariant = "classic" | "slim";
+
+/** One skin of the local library, with its texture as a data URL. */
+export interface LibrarySkin {
+  id: string;
+  name: string;
+  variant: SkinVariant;
+  /** The cape worn with this skin, `null` meaning "no cape". */
+  capeId: string | null;
+  addedAt: number;
+  texture: string;
+}
+
+/** A cape the account owns. */
+export interface CapeOption {
+  id: string;
+  alias: string | null;
+  texture: string;
+  active: boolean;
 }

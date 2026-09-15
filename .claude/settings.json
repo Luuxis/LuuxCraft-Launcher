@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Bash(git *)"
+    ],
+    "defaultMode": "bypassPermissions"
+  }
+}

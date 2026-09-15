@@ -102,21 +102,8 @@ pub async fn fetch_snapshot(state: &AppState) -> AppResult<RemoteSnapshot> {
         }
     };
 
-    let links = if config.links.is_empty() {
-        state
-            .config
-            .links
-            .iter()
-            .map(|link| Link {
-                label: link.label.clone(),
-                url: link.url.clone(),
-                icon: link.icon.clone(),
-                order: None,
-            })
-            .collect()
-    } else {
-        config.links.clone()
-    };
+    // The panel is the only source of links (`socialLinks`).
+    let links = config.links.clone();
 
     let snapshot = RemoteSnapshot {
         config,

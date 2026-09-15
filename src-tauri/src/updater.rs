@@ -1,8 +1,8 @@
 //! Launcher auto-update through `tauri-plugin-updater`.
 //!
-//! Endpoints come from the central configuration (`updater.endpoints`), the
-//! public key from `tauri.conf.json`. Every package is signature-checked by
-//! the plugin before installation.
+//! Endpoints come from the panel (`updater.endpoints` of `/config`) and fall
+//! back to the built-in `UPDATER_ENDPOINTS`; the public key comes from
+//! `tauri.conf.json`. Every package is signature-checked before installation.
 
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -43,11 +43,23 @@ pub enum UpdateEvent {
     Installed,
 }
 
+/// The panel wins over the built-in list, so a release can be redirected
+/// without shipping a new launcher.
+fn configured_endpoints(state: &AppState) -> Vec<String> {
+    let from_panel = state
+        .snapshot()
+        .or_else(|| state.cached_snapshot())
+        .map(|snapshot| snapshot.config.updater_endpoints)
+        .unwrap_or_default();
+    if from_panel.is_empty() {
+        state.config.updater.endpoints.clone()
+    } else {
+        from_panel
+    }
+}
+
 fn endpoints(state: &AppState) -> AppResult<Vec<url::Url>> {
-    state
-        .config
-        .updater
-        .endpoints
+    configured_endpoints(state)
         .iter()
         .map(|endpoint| {
             url::Url::parse(endpoint).map_err(|error| {
@@ -78,7 +90,7 @@ async fn check(
 
 #[tauri::command]
 pub async fn update_check(app: AppHandle, state: State<'_, AppState>) -> AppResult<UpdateCheck> {
-    if state.config.updater.endpoints.is_empty() {
+    if configured_endpoints(&state).is_empty() {
         log::info!("auto-update disabled: no endpoint configured");
         return Ok(UpdateCheck {
             configured: false,

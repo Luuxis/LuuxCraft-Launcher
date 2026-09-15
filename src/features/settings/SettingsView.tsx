@@ -5,12 +5,11 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
-import { launcherConfig } from "../../config/launcher";
 import { describeError, t } from "../../i18n";
 import { formatBytes, formatMemory, formatPercent } from "../../lib/format";
 import { ipc, toAppError } from "../../lib/ipc";
 import type { JavaInstall, JavaRequirement, Settings } from "../../lib/types";
-import { useActions, useAppState, useInstances } from "../../store/AppStore";
+import { useActions, useAppState, useBrand, useInstances, useUpdaterConfigured } from "../../store/AppStore";
 import { Button, IconButton } from "../../components/ui/Button";
 import { Field, Input, OptionCard, Select, Slider, Textarea, Toggle } from "../../components/ui/forms";
 import { Icon } from "../../components/ui/Icon";
@@ -79,10 +78,14 @@ function Section({ id, icon, title, children, tone }: { id: string; icon: string
 
 export function SettingsView() {
   const { bootstrap, update: updateCheckResult, updateInstalling, updateProgress } = useAppState();
-  const { resetSettings, openFolder, checkUpdate, installUpdate, openExternal } = useActions();
+  const { resetSettings, openFolder, checkUpdate, installUpdate, openExternal, toast } = useActions();
   const { selected } = useInstances();
   const { draft, update, saving } = useSettingsEditor();
+  const brand = useBrand();
+  const updaterConfigured = useUpdaterConfigured();
+  const provisioning = bootstrap?.provisioning;
   const [confirmReset, setConfirmReset] = useState(false);
+  const [changeServer, setChangeServer] = useState(false);
   const [gameRoot, setGameRoot] = useState(bootstrap?.paths.gameRoot ?? "");
 
   const [javas, setJavas] = useState<JavaInstall[] | null>(null);
@@ -155,7 +158,7 @@ export function SettingsView() {
   const totalMb = bootstrap.system.totalMemoryMb;
   const memoryCeiling = Math.max(1024, (totalMb ?? 16384) - 1024);
   const platformIsAppleSilicon = bootstrap.system.platform === "macos" && bootstrap.system.arch === "aarch64";
-  const updaterConfigured = launcherConfig.updater.endpoints.length > 0;
+  
 
   const detectJava = async () => {
     setDetecting(true);
@@ -381,8 +384,8 @@ export function SettingsView() {
 
         {/* Téléchargements */}
         <Section id="downloads" icon="download" title={t("settings.sections.downloads")} tone="diamond">
-          <Field label={t("settings.downloads.concurrency")} icon="swap_vert" hint={t("settings.downloads.hint", { max: launcherConfig.downloads.maxConcurrency })}>
-            <Slider value={draft.downloadConcurrency} min={1} max={launcherConfig.downloads.maxConcurrency} onChange={(v) => update({ downloadConcurrency: v })} />
+          <Field label={t("settings.downloads.concurrency")} icon="swap_vert" hint={t("settings.downloads.hint", { max: bootstrap.config.downloads.maxConcurrency })}>
+            <Slider value={draft.downloadConcurrency} min={1} max={bootstrap.config.downloads.maxConcurrency} onChange={(v) => update({ downloadConcurrency: v })} />
           </Field>
         </Section>
 
@@ -418,6 +421,21 @@ export function SettingsView() {
           </div>
           <Notice tone="warning">{t("settings.install.changeWarning")}</Notice>
         </Section>
+
+        {/* Serveur : à quel client du panel ce launcher est appairé */}
+        {provisioning ? (
+          <Section id="server" icon="dns" title={t("settings.sections.server")}>
+            <KeyValue label={t("pairing.codeField")} value={provisioning.key ?? t("common.none")} mono />
+            <KeyValue label={t("pairing.panelField")} value={provisioning.apiUrl} mono />
+            {provisioning.source ? (
+              <KeyValue label={t("pairing.sourceField")} value={t(`pairing.source.${provisioning.source}`)} />
+            ) : null}
+            <Button variant="secondary" icon="swap_horiz" onClick={() => setChangeServer(true)}>
+              {t("pairing.change")}
+            </Button>
+            <Notice tone="warning">{t("pairing.changeHint")}</Notice>
+          </Section>
+        ) : null}
 
         {/* Interface */}
         <Section id="interface" icon="palette" title={t("settings.sections.interface")} tone="pink">
@@ -509,13 +527,13 @@ export function SettingsView() {
             <KeyValue label={t("settings.about.version")} value={bootstrap.system.launcherVersion} mono />
             <KeyValue label={t("settings.about.engine")} value="crust_core 1.0.3" mono />
             <KeyValue label={t("settings.about.platform")} value={`${bootstrap.system.platform} · ${bootstrap.system.arch}`} mono />
-            <KeyValue label={t("settings.about.panel")} value={launcherConfig.api.baseUrl.replace(/^https?:\/\//, "")} mono />
-            <KeyValue label="Launcher" value={launcherConfig.userId} mono />
+            <KeyValue label={t("settings.about.panel")} value={bootstrap.config.api.baseUrl.replace(/^https?:\/\//, "")} mono />
+            <KeyValue label="Launcher" value={bootstrap.config.userId} mono />
             <KeyValue label={t("settings.about.storage")} value={<span className="selectable">{bootstrap.system.accountsFile}</span>} mono />
           </div>
-          {launcherConfig.brand.website ? (
-            <Button variant="ghost" size="xs" icon="open_in_new" onClick={() => void openExternal(launcherConfig.brand.website!)}>
-              {launcherConfig.brand.website}
+          {brand.website ? (
+            <Button variant="ghost" size="xs" icon="open_in_new" onClick={() => void openExternal(brand.website!)}>
+              {brand.website}
             </Button>
           ) : null}
         </Section>
@@ -531,6 +549,25 @@ export function SettingsView() {
         onConfirm={async () => {
           await resetSettings();
           setConfirmReset(false);
+        }}
+      />
+
+      {/* Oublier le serveur redémarre le launcher : la confirmation n'a rien à
+          rouvrir derrière elle. */}
+      <ConfirmDialog
+        open={changeServer}
+        title={t("pairing.changeConfirmTitle")}
+        message={t("pairing.changeConfirmMessage")}
+        confirmLabel={t("pairing.change")}
+        danger
+        onCancel={() => setChangeServer(false)}
+        onConfirm={async () => {
+          try {
+            await ipc.provisioningForget();
+          } catch (cause) {
+            setChangeServer(false);
+            toast("error", t("errors.title"), describeError(toAppError(cause)));
+          }
         }}
       />
     </div>

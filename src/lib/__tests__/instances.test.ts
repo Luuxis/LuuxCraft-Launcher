@@ -50,12 +50,12 @@ describe("instances", () => {
     expect(loaderLabel("custom")).toBe("Custom");
   });
 
-  it("merges module toggles", () => {
-    const defaults = { news: true, skins: true };
-    expect(moduleEnabled("news", defaults, undefined)).toBe(true);
-    expect(moduleEnabled("news", defaults, { news: false })).toBe(false);
-    expect(moduleEnabled("news", defaults, { news: { enabled: false } })).toBe(false);
-    expect(moduleEnabled("news", defaults, { news: "off" })).toBe(false);
-    expect(moduleEnabled("unknown", defaults, {})).toBe(true);
+  it("reads the module toggles of the panel", () => {
+    expect(moduleEnabled("news", undefined)).toBe(true);
+    expect(moduleEnabled("news", { news: false })).toBe(false);
+    expect(moduleEnabled("news", { news: { enabled: false } })).toBe(false);
+    expect(moduleEnabled("news", { news: "off" })).toBe(false);
+    expect(moduleEnabled("news", { news: true })).toBe(true);
+    expect(moduleEnabled("unknown", {})).toBe(true);
   });
 });

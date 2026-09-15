@@ -1,8 +1,8 @@
 //! Persistent user settings (`settings.json`).
 //!
-//! Defaults come from the central launcher configuration, the file is merged
-//! over them so new fields get sensible values when the launcher is updated,
-//! and every value is clamped to a safe range before use.
+//! Defaults come from the built-in launcher configuration (`config.rs`), the
+//! file is merged over them so new fields get sensible values when the
+//! launcher is updated, and every value is clamped to a safe range before use.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

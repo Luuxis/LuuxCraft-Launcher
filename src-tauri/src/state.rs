@@ -13,10 +13,15 @@ use crate::api::RemoteSnapshot;
 use crate::config::{LauncherConfig, Paths};
 use crate::error::{AppError, AppResult};
 use crate::game::GameManager;
+use crate::provisioning::ProvisioningSource;
 use crate::settings::Settings;
 
 pub struct AppState {
     pub config: LauncherConfig,
+    /// Where `config.user_id` came from; `None` while the launcher is not
+    /// paired to a client yet, which is what makes the UI show the pairing
+    /// screen instead of an empty launcher.
+    pub provisioning_source: Option<ProvisioningSource>,
     pub paths: Paths,
     pub http: HttpClient,
     pub settings: Mutex<Settings>,
@@ -33,7 +38,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: LauncherConfig, paths: Paths) -> Result<Self, String> {
+    pub fn new(
+        config: LauncherConfig,
+        provisioning_source: Option<ProvisioningSource>,
+        paths: Paths,
+    ) -> Result<Self, String> {
         paths
             .create_all()
             .map_err(|error| format!("cannot create the launcher directories: {error}"))?;
@@ -52,6 +61,7 @@ impl AppState {
 
         Ok(Self {
             config,
+            provisioning_source,
             paths,
             http,
             settings: Mutex::new(settings),

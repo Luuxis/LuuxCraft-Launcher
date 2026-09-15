@@ -79,7 +79,7 @@ async fn auth_methods(state: &AppState) -> AppResult<AuthMethods> {
         microsoft: false,
         azauth: None,
         offline: false,
-        yggdrasil: state.config.auth.yggdrasil_server.clone(),
+        yggdrasil: yggdrasil_server(state),
     };
     match snapshot.config.auth {
         AuthMode::Microsoft => methods.microsoft = true,
@@ -87,6 +87,14 @@ async fn auth_methods(state: &AppState) -> AppResult<AuthMethods> {
         AuthMode::AzAuth { url } => methods.azauth = Some(url),
     }
     Ok(methods)
+}
+
+/// The Yggdrasil-compatible server: the panel's if it publishes one, the
+/// built-in constant otherwise.
+fn yggdrasil_server(state: &AppState) -> Option<String> {
+    panel_config(state)
+        .and_then(|config| config.yggdrasil)
+        .or_else(|| state.config.auth.yggdrasil_server.clone())
 }
 
 /// The panel configuration from memory, or from the disk cache when the panel
@@ -277,7 +285,7 @@ pub async fn auth_yggdrasil_login(
     username: String,
     password: String,
 ) -> AppResult<AccountSummary> {
-    let Some(server) = state.config.auth.yggdrasil_server.clone() else {
+    let Some(server) = yggdrasil_server(&state) else {
         return Err(AppError::new(
             "auth_method_disabled",
             "no Yggdrasil server is configured",

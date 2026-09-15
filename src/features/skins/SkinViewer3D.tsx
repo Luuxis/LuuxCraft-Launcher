@@ -1,21 +1,13 @@
 /**
  * 3D player preview built on skinview3d (three.js). Handles classic/slim
- * models, capes (cape or elytra), animations, zoom, rotation and panning.
+ * models, capes, zoom, rotation and panning. The character always walks: the
+ * launcher offers no animation picker.
  */
 import { useEffect, useRef } from "react";
-import {
-  FlyingAnimation,
-  IdleAnimation,
-  RunningAnimation,
-  SkinViewer,
-  WalkingAnimation,
-  WaveAnimation,
-  type PlayerAnimation,
-} from "skinview3d";
+import { SkinViewer, WalkingAnimation } from "skinview3d";
 
 import { defaultSkinCanvas } from "../../lib/defaultSkin";
 
-export type AnimationName = "none" | "idle" | "walk" | "run" | "wave" | "fly";
 export type ModelName = "auto" | "default" | "slim";
 
 const DEFAULT_POSE_Y = 0.45;
@@ -24,46 +16,37 @@ interface SkinViewer3DProps {
   skin: string | null;
   cape: string | null;
   model: ModelName;
-  animation: AnimationName;
   autoRotate: boolean;
   zoom: number;
-  elytra: boolean;
   className?: string;
   /** Increment to recentre the camera. */
   resetToken?: number;
+  /** Fired when the user grabs the model to move it. */
+  onUserControl?: () => void;
 }
 
-function makeAnimation(name: AnimationName): PlayerAnimation | null {
-  switch (name) {
-    case "idle":
-      return new IdleAnimation();
-    case "walk":
-      return new WalkingAnimation();
-    case "run":
-      return new RunningAnimation();
-    case "wave":
-      return new WaveAnimation();
-    case "fly":
-      return new FlyingAnimation();
-    default:
-      return null;
-  }
-}
-
-export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, elytra, className = "", resetToken = 0 }: SkinViewer3DProps) {
+export function SkinViewer3D({ skin, cape, model, autoRotate, zoom, className = "", resetToken = 0, onUserControl }: SkinViewer3DProps) {
   const container = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewer = useRef<SkinViewer | null>(null);
+  // Kept in a ref so changing the callback never rebuilds the whole viewer.
+  const userControl = useRef(onUserControl);
+  userControl.current = onUserControl;
 
   // Create / dispose the viewer.
   useEffect(() => {
     const canvas = canvasRef.current;
     const box = container.current;
     if (!canvas || !box) return;
+    const measure = () => {
+      const rect = box.getBoundingClientRect();
+      return { width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+    };
+    const initial = measure();
     const instance = new SkinViewer({
       canvas,
-      width: box.clientWidth || 320,
-      height: box.clientHeight || 420,
+      width: initial.width,
+      height: initial.height,
       fov: 50,
       zoom: 0.65,
       enableControls: true,
@@ -75,13 +58,24 @@ export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, e
     instance.cameraLight.intensity = 0.6;
     instance.autoRotateSpeed = 0.3;
     instance.playerWrapper.rotation.y = DEFAULT_POSE_Y;
+    instance.animation = new WalkingAnimation();
     viewer.current = instance;
 
+    // The canvas fills its container through CSS; the render buffer follows so
+    // the picture is never stretched.
     const observer = new ResizeObserver(() => {
-      if (box.clientWidth > 0 && box.clientHeight > 0) instance.setSize(box.clientWidth, box.clientHeight);
+      const { width, height } = measure();
+      instance.setSize(width, height);
     });
     observer.observe(box);
+
+    // Taking hold of the model hands control back to the user: the automatic
+    // rotation would otherwise keep fighting the drag.
+    const onGrab = () => userControl.current?.();
+    canvas.addEventListener("pointerdown", onGrab);
+
     return () => {
+      canvas.removeEventListener("pointerdown", onGrab);
       observer.disconnect();
       instance.dispose();
       viewer.current = null;
@@ -102,22 +96,15 @@ export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, e
     }
   }, [skin, model]);
 
-  // Cape / elytra.
   useEffect(() => {
     const instance = viewer.current;
     if (!instance) return;
     if (cape) {
-      instance.loadCape(cape, { backEquipment: elytra ? "elytra" : "cape" }).catch(() => instance.loadCape(null));
+      instance.loadCape(cape, { backEquipment: "cape" }).catch(() => instance.loadCape(null));
     } else {
       instance.loadCape(null);
     }
-  }, [cape, elytra]);
-
-  useEffect(() => {
-    const instance = viewer.current;
-    if (!instance) return;
-    instance.animation = makeAnimation(animation);
-  }, [animation]);
+  }, [cape]);
 
   useEffect(() => {
     const instance = viewer.current;
@@ -141,7 +128,7 @@ export function SkinViewer3D({ skin, cape, model, animation, autoRotate, zoom, e
 
   return (
     <div ref={container} className={`relative w-full h-full ${className}`}>
-      <canvas ref={canvasRef} className="block w-full h-full" style={{ touchAction: "none" }} />
+      <canvas ref={canvasRef} className="skin-canvas" style={{ touchAction: "none" }} />
     </div>
   );
 }

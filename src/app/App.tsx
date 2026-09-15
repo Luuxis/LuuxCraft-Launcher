@@ -8,10 +8,14 @@ import { Toasts } from "../components/ui/Toasts";
 import { AccountsView } from "../features/accounts/AccountsView";
 import { LoginModal } from "../features/accounts/LoginModal";
 import { HomeView } from "../features/home/HomeView";
-import { InstancesView } from "../features/instances/InstancesView";
+import { PairingView } from "../features/provisioning/PairingView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { SkinsView } from "../features/skins/SkinsView";
 import { UpdateBanner } from "../features/updater/UpdateBanner";
+import type { View } from "../store/AppStore";
+
+/** Views laid out to the window height instead of scrolling with the page. */
+const FILLING_VIEWS = new Set<View>(["skins"]);
 
 export function App() {
   const state = useAppState();
@@ -30,6 +34,18 @@ export function App() {
             <Icon name="autorenew" size={16} spin /> {state.bootMessage}
           </p>
         </div>
+      </div>
+    );
+  }
+
+  // A generic build that has not been told which client of the panel it
+  // serves: nothing can be fetched, so the pairing screen replaces the whole
+  // launcher rather than sitting inside an empty one.
+  if (state.phase === "pairing") {
+    return (
+      <div className="launcher-bg h-full flex flex-col">
+        <TitleBar />
+        <PairingView />
       </div>
     );
   }
@@ -92,10 +108,15 @@ export function App() {
       ) : null}
       <div className="relative z-10 flex flex-1 min-h-0">
         <Sidebar />
-        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden custom-scrollbar">
-          <div className="w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+        {/* Most views scroll with the page; a "filling" one takes the height it
+            is given and scrolls inside itself (the skin page, for instance). */}
+        <main
+          className={`flex-1 min-w-0 overflow-x-hidden custom-scrollbar ${FILLING_VIEWS.has(state.view) ? "overflow-hidden" : "overflow-y-auto"}`}
+        >
+          <div
+            className={`w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 ${FILLING_VIEWS.has(state.view) ? "h-full flex flex-col min-h-0" : ""}`}
+          >
             {state.view === "home" ? <HomeView /> : null}
-            {state.view === "instances" ? <InstancesView /> : null}
             {state.view === "accounts" ? <AccountsView /> : null}
             {state.view === "skins" ? <SkinsView /> : null}
             {state.view === "settings" ? <SettingsView /> : null}

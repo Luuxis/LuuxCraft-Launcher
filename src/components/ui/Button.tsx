@@ -1,6 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 import { Icon } from "./Icon";
+import { useTooltip } from "./Tooltip";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "gold";
 type Size = "xs" | "sm" | "md" | "lg" | "xl";
@@ -76,17 +77,21 @@ export function IconButton({
   type = "button",
   ...rest
 }: IconButtonProps) {
+  const { triggerProps, node } = useTooltip(label, tooltip);
   return (
-    <button
-      type={type}
-      className={`icon-button ${danger ? "danger" : ""} ${tooltip ? "tooltip" : ""} ${className}`}
-      aria-label={label}
-      title={tooltip ? undefined : label}
-      data-tooltip={tooltip ? label : undefined}
-      disabled={disabled || loading}
-      {...rest}
-    >
-      <Icon name={loading ? "autorenew" : icon} size={size} spin={loading} />
-    </button>
+    <>
+      <button
+        type={type}
+        className={`icon-button ${danger ? "danger" : ""} ${className}`}
+        aria-label={label}
+        title={tooltip ? undefined : label}
+        disabled={disabled || loading}
+        {...rest}
+        {...triggerProps}
+      >
+        <Icon name={loading ? "autorenew" : icon} size={size} spin={loading} />
+      </button>
+      {node}
+    </>
   );
 }

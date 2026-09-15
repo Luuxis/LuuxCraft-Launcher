@@ -1,17 +1,65 @@
-//! Central launcher configuration.
+//! Launcher identity and built-in defaults.
 //!
-//! Everything that differentiates one LuuxCraft launcher from another (the
-//! panel `user_id`, the API base URL, the brand, the defaults) lives in
-//! `launcher.config.json` at the repository root. The file is embedded at
-//! compile time here and imported as JSON by the frontend, so there is a single
-//! source of truth and no value is hard-coded anywhere else.
+//! Everything that can be published by the panel is published by the panel:
+//! maintenance, sign-in mode, Azure client id, data directory, links, module
+//! toggles, instances and news all come from the API at runtime (see `api`).
+//!
+//! What the API cannot provide is its own address, nor which client of the
+//! panel this launcher belongs to. **One binary is built for every client**:
+//! the client id is not compiled in, the panel appends it to the installer at
+//! download time and `provisioning` reads it back. The build-time
+//! `LUUXCRAFT_API_URL` and `LUUXCRAFT_USER_ID` overrides remain for whoever
+//! wants a dedicated build, or to point a fork at another panel.
+//!
+//! The rest of this module is made of plain defaults, applied until the panel
+//! (or the user's settings) says otherwise.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-const RAW_CONFIG: &str = include_str!("../../launcher.config.json");
+use crate::provisioning::Provisioning;
+
+/// LuuxCraft panel: `{API_BASE_URL}/user/{USER_ID}/...`.
+///
+/// The address stays compiled in because it is generic — it is the same for
+/// every client of one panel. Only the client id varies from one to the next.
+const API_BASE_URL: &str = match option_env!("LUUXCRAFT_API_URL") {
+    Some(url) => url,
+    None => "https://luuxcraft.fr/api",
+};
+
+/// Empty on purpose: the generic build carries no client id. It is provisioned
+/// at download time, or asked for once at first launch. Setting
+/// `LUUXCRAFT_USER_ID` at build time pins a launcher to one client.
+const USER_ID: &str = match option_env!("LUUXCRAFT_USER_ID") {
+    Some(id) => id,
+    None => "",
+};
+
+/// Game folder under the platform data directory, until the panel announces
+/// its own `dataDirectory`.
+const DEFAULT_DATA_DIRECTORY: &str = "luuxcraft";
+
+/// Panel route of the dynamic update server, relative to the API base URL.
+///
+/// Built from the base URL rather than hard-coded so a launcher provisioned
+/// against another panel takes its updates from that panel too. The releases
+/// are global: there is one compiled launcher, therefore one update chain for
+/// all the clients of a panel. The braces are the placeholders
+/// `tauri-plugin-updater` substitutes itself.
+fn updater_endpoints_for(base_url: &str) -> Vec<String> {
+    vec![format!(
+        "{}/launcher/update/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}",
+        base_url.trim_end_matches('/')
+    )]
+}
+
+/// Optional Yggdrasil-compatible server (authlib-injector style). Mojang's own
+/// `authserver.mojang.com` is discontinued, so that sign-in method is only
+/// offered when a compatible server is set here.
+const YGGDRASIL_SERVER: Option<&str> = None;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,30 +67,16 @@ pub struct LauncherConfig {
     /// LuuxCraft panel user id: `{api.baseUrl}/user/{userId}/...`.
     pub user_id: String,
     pub api: ApiConfig,
-    pub brand: BrandConfig,
     /// Folder name of the game data under the platform data directory, used
     /// when the panel config does not provide `dataDirectory`.
     pub data_directory: String,
-    #[serde(default)]
     pub updater: UpdaterConfig,
-    #[serde(default)]
     pub auth: AuthConfig,
-    #[serde(default)]
     pub news: NewsConfig,
-    #[serde(default)]
     pub server_status: ServerStatusConfig,
-    #[serde(default)]
     pub downloads: DownloadsConfig,
-    #[serde(default)]
     pub memory: MemoryConfig,
-    #[serde(default)]
     pub game_window: GameWindowConfig,
-    /// Links shown when the panel does not publish any (`socialLinks`).
-    #[serde(default)]
-    pub links: Vec<LinkConfig>,
-    /// Default module toggles; the panel config can override any of them.
-    #[serde(default)]
-    pub modules: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,23 +89,6 @@ pub struct ApiConfig {
 
 fn default_timeout() -> u64 {
     15
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrandConfig {
-    pub name: String,
-    pub wordmark: Wordmark,
-    #[serde(default)]
-    pub subtitle: String,
-    #[serde(default)]
-    pub website: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Wordmark {
-    pub prefix: String,
-    pub suffix: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -217,37 +234,55 @@ impl Default for GameWindowConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LinkConfig {
-    pub label: String,
-    pub url: String,
-    #[serde(default)]
-    pub icon: Option<String>,
-}
-
 impl LauncherConfig {
-    /// Parses and validates the embedded `launcher.config.json`.
+    /// Builds the configuration from the constants above and checks the values
+    /// a build can override.
+    ///
+    /// A missing `user_id` is **not** an error: the generic build starts
+    /// unprovisioned and either finds its client id in the installer (see
+    /// `provisioning`) or asks the player for it once.
     pub fn load() -> Result<Self, String> {
-        let config: Self = serde_json::from_str(RAW_CONFIG)
-            .map_err(|error| format!("launcher.config.json is invalid: {error}"))?;
-        if config.user_id.trim().is_empty() {
-            return Err("launcher.config.json: `userId` is required".into());
+        let base_url = API_BASE_URL.trim().trim_end_matches('/').to_owned();
+        if !base_url.starts_with("https://") {
+            return Err(format!("LUUXCRAFT_API_URL must use https: {base_url}"));
         }
-        if !config.api.base_url.starts_with("https://") {
-            return Err("launcher.config.json: `api.baseUrl` must use https".into());
-        }
-        if config.data_directory.trim().is_empty() {
-            return Err("launcher.config.json: `dataDirectory` is required".into());
-        }
-        for endpoint in &config.updater.endpoints {
-            if !endpoint.starts_with("https://") {
-                return Err(format!(
-                    "launcher.config.json: updater endpoint must use https: {endpoint}"
-                ));
-            }
-        }
-        Ok(config)
+
+        Ok(Self {
+            user_id: USER_ID.trim().to_owned(),
+            api: ApiConfig {
+                base_url: base_url.clone(),
+                timeout_seconds: default_timeout(),
+            },
+            data_directory: DEFAULT_DATA_DIRECTORY.to_owned(),
+            updater: UpdaterConfig {
+                endpoints: updater_endpoints_for(&base_url),
+            },
+            auth: AuthConfig {
+                yggdrasil_server: YGGDRASIL_SERVER.map(str::to_owned),
+            },
+            news: NewsConfig::default(),
+            server_status: ServerStatusConfig::default(),
+            downloads: DownloadsConfig::default(),
+            memory: MemoryConfig::default(),
+            game_window: GameWindowConfig::default(),
+        })
+    }
+
+    /// `true` once the launcher knows which client of the panel it serves.
+    /// Until then nothing can be fetched and the UI asks for a pairing code.
+    pub fn is_provisioned(&self) -> bool {
+        !self.user_id.is_empty()
+    }
+
+    /// Applies a resolved provisioning block: panel address and client id.
+    ///
+    /// The updater endpoints are recomputed, otherwise a launcher provisioned
+    /// against another panel would keep asking the compiled-in one for its
+    /// updates — and would install that panel's builds.
+    pub fn apply_provisioning(&mut self, provisioning: &Provisioning) {
+        self.api.base_url = provisioning.api_url.trim_end_matches('/').to_owned();
+        self.user_id = provisioning.key.clone();
+        self.updater.endpoints = updater_endpoints_for(&self.api.base_url);
     }
 
     /// `{baseUrl}/user/{userId}` without a trailing slash.
@@ -333,6 +368,12 @@ impl Paths {
         self.cache_dir.join("skins")
     }
 
+    /// The user's own skin library (PNG files + index). User data, not a
+    /// cache: it must survive a cache wipe.
+    pub fn skins_library_dir(&self) -> PathBuf {
+        self.launcher_dir.join("skins")
+    }
+
     pub fn game_logs_dir(&self) -> PathBuf {
         self.logs_dir.join("game")
     }
@@ -358,11 +399,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_config_is_valid() {
-        let config = LauncherConfig::load().expect("valid launcher.config.json");
-        assert!(!config.user_id.is_empty());
+    fn built_in_config_is_valid() {
+        let config = LauncherConfig::load().expect("valid launcher configuration");
+        assert!(config.api.base_url.starts_with("https://"));
+        assert!(!config.api.base_url.ends_with('/'));
         assert!(config.user_api_url().ends_with(&config.user_id));
         assert!(config.downloads.max_concurrency <= 30);
+    }
+
+    /// The generic build starts without a client id — that is the whole point
+    /// of not compiling one launcher per client.
+    #[test]
+    fn a_build_without_a_user_id_is_unprovisioned() {
+        let config = LauncherConfig::load().expect("valid launcher configuration");
+        assert_eq!(config.is_provisioned(), !config.user_id.is_empty());
+    }
+
+    #[test]
+    fn provisioning_moves_the_panel_and_the_updater_together() {
+        let mut config = LauncherConfig::load().expect("valid launcher configuration");
+        config.apply_provisioning(&Provisioning {
+            api_url: "https://autre-panel.fr/api/".into(),
+            key: "abc-def-ghi".into(),
+        });
+        assert_eq!(config.api.base_url, "https://autre-panel.fr/api");
+        assert_eq!(config.user_id, "abc-def-ghi");
+        assert!(config.is_provisioned());
+        assert!(config.user_api_url().starts_with("https://autre-panel.fr/api/user/"));
+        assert!(
+            config
+                .updater
+                .endpoints
+                .iter()
+                .all(|endpoint| endpoint.starts_with("https://autre-panel.fr/api/")),
+            "updates must follow the panel: {:?}",
+            config.updater.endpoints
+        );
+    }
+
+    #[test]
+    fn updater_endpoints_keep_the_plugin_placeholders() {
+        let endpoints = updater_endpoints_for("https://luuxcraft.fr/api");
+        assert_eq!(
+            endpoints,
+            vec!["https://luuxcraft.fr/api/launcher/update/{{target}}/{{arch}}/{{current_version}}"]
+        );
     }
 
     #[test]

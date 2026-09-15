@@ -1,14 +1,14 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { launcherConfig } from "../../config/launcher";
 import { t } from "../../i18n";
+import { useBrand } from "../../store/AppStore";
 import { Icon } from "../ui/Icon";
 
 const windowApi = getCurrentWindow();
 
 /** Custom title bar (decorations are off): drag region + window controls. */
 export function TitleBar({ subtitle }: { subtitle?: string }) {
-  const { brand } = launcherConfig;
+  const brand = useBrand();
   return (
     <header
       data-tauri-drag-region

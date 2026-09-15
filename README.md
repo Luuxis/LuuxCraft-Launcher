@@ -4,34 +4,98 @@ Launcher Minecraft de LuuxCraft, construit sur [Tauri 2](https://v2.tauri.app), 
 [`crust_core` 1.0.3](https://docs.rs/crust_core/1.0.3). L'interface reprend le design system
 « LuuxCraft Forge » du panel (voir `CHARTE-GRAPHIQUE.md`).
 
-Le projet est une **base réutilisable** : un autre launcher se crée en changeant
-`launcher.config.json`, sans toucher au code.
+Le projet est une **base réutilisable** : un autre launcher se crée en pointant vers un autre
+panel, sans toucher au reste du code.
 
-## Configuration centrale
+## Configuration
 
-`launcher.config.json` (racine du dépôt) est embarqué côté Rust (`include_str!`) et importé
-côté frontend. Il contient :
+**Tout ce qui est configurable vient du panel**, à chaque démarrage : maintenance, mode de
+connexion, `client_id` Azure, dossier du jeu, liens sociaux, modules actifs, instances et
+actualités. Rien n'est dupliqué dans le dépôt.
 
-| Clé | Rôle |
-|---|---|
-| `userId` | Identifiant du launcher sur le panel (`/api/user/{userId}/...`) |
-| `api.baseUrl` | Base de l'API LuuxCraft (`https://luuxcraft.fr/api`) |
-| `brand` | Nom, wordmark (`Luux` + `Craft`), sous-titre, site |
-| `dataDirectory` | Dossier du jeu par défaut (remplacé par `dataDirectory` du panel s'il existe) |
-| `updater.endpoints` | Serveurs de mise à jour Tauri (vide = auto-update désactivé) |
-| `auth.yggdrasilServer` | Serveur Yggdrasil optionnel (`Mojang` legacy est arrêté par Mojang) |
-| `news`, `serverStatus`, `downloads`, `memory`, `gameWindow` | Valeurs par défaut des réglages |
-| `links` | Liens affichés quand le panel n'en publie pas |
-| `modules` | Modules activés par défaut (le panel peut les surcharger) |
+Restent deux choses que l'API ne peut pas s'auto-annoncer : son adresse, et *à quel client du
+panel* ce launcher appartient. La première est générique — elle est la même pour tous les
+clients d'un panel — et reste donc compilée dans `src-tauri/src/config.rs`. La seconde **n'est
+pas compilée** : un seul binaire sert tous les clients, et c'est le panel qui y ajoute la
+configuration au moment du téléchargement (voir « Provisionnement » plus bas).
+
+| Variable de build | Rôle | Défaut |
+|---|---|---|
+| `LUUXCRAFT_API_URL` | Base de l'API (`https://…/api`) | `https://luuxcraft.fr/api` |
+| `LUUXCRAFT_USER_ID` | Épingle le launcher à un seul client, au lieu du provisionnement | vide |
+
+```bash
+# Build générique, celui que la CI publie : aucun client en dur.
+npm run tauri build
+
+# Build dédié à un client, si on y tient vraiment.
+LUUXCRAFT_API_URL=https://autre-panel.fr/api LUUXCRAFT_USER_ID=abc-def-ghi npm run tauri build
+```
+
+Le même fichier porte les quelques constantes qu'aucune API ne fournit : `YGGDRASIL_SERVER`
+(optionnel, le serveur legacy de Mojang étant arrêté) et les valeurs par défaut des réglages
+(mémoire, fenêtre, téléchargements, statut serveur, actualités) appliquées tant que
+l'utilisateur n'a rien changé. Les points de mise à jour sont dérivés de l'adresse du panel,
+pas écrits en dur : un launcher provisionné sur un autre panel prend ses mises à jour de ce
+panel-là.
+L'identité visuelle (nom, wordmark) est dans `src/config/brand.ts` : elle est peinte dans la
+barre de titre dès la première image, avant toute requête.
+
+## Provisionnement
+
+Le launcher n'est **pas compilé par client**. Le panel stocke un seul jeu d'artefacts et, quand
+un client télécharge son installeur, il y ajoute un bloc de 512 octets qui dit à quel panel
+parler. Renommer, déplacer ou re-télécharger le fichier ne casse rien : l'identité est dans les
+octets du fichier, jamais dans son nom.
+
+`src-tauri/src/provisioning.rs` cherche cette configuration dans cet ordre :
+
+1. **bloc à la fin de l'exécutable courant** — le cas d'une AppImage Linux ou d'un `.exe`
+   portable, qui *sont* le fichier téléchargé ;
+2. **`provisioning.blob` à côté de l'exécutable** — écrit par `src-tauri/installer-hooks.nsh`,
+   le hook NSIS qui relit son propre bloc au moment d'installer ;
+3. **`provisioning.json` du dossier de données** — la copie persistée, qui survit aux mises à
+   jour (l'installeur téléchargé par l'updater, lui, n'a pas de bloc) ;
+4. **`LUUXCRAFT_USER_ID` compilé**, pour un build dédié ;
+5. sinon, l'interface demande son code au joueur une seule fois
+   (`src/features/provisioning/PairingView.tsx`).
+
+Les sources fraîches passent avant la copie persistée : réinstaller avec l'installeur d'un autre
+serveur doit changer de serveur. Le cinquième cas ne sert qu'aux formats qui ne tolèrent pas
+d'octets ajoutés à la fin — le `.dmg` de macOS a son trailer `koly` collé à la fin, un `.deb`
+porte des sommes de contrôle.
+
+Le bloc n'est pas signé, et n'a pas à l'être : il ne contient que des informations déjà
+publiques (la clé client voyage en clair dans toutes les URLs de l'API) et quiconque peut le
+réécrire peut de toute façon réécrire l'exécutable entier. La seule garantie utile est le refus
+d'une `apiUrl` qui n'est pas en https.
+
+Le format est décrit une fois, dans `src/lib/provisioning.ts` du panel, et relu à l'identique
+par `provisioning.rs` et par le hook NSIS. Trois contraintes l'expliquent : taille fixe (NSIS se
+place à `-512` de la fin sans connaître la longueur), ASCII imprimable sans retour à la ligne
+(`FileRead` s'arrête au premier `\n`, et la conversion ANSI → UTF-16 d'un installeur Unicode
+est l'identité sur 0x20–0x7E), et 512 octets et non 1024 (`NSIS_MAX_STRLEN` vaut 1024).
+Changer l'un des trois oblige à changer les trois.
 
 ## Données du panel
 
 Routes consommées (mêmes routes que les launchers de référence LuuxCraft) :
 
-- `GET {baseUrl}/user/{userId}/config` — `maintenance`, `maintenance_message`, `dataDirectory`,
-  `online` (`true` = Microsoft, `false` = hors ligne, URL = site Azuriom/AZauth), `client_id`,
-  `socialLinks`, plus tout champ futur (conservé dans `extra`, `modules`/`features` pour les
-  bascules de modules).
+- `GET {baseUrl}/user/{userId}/config` — tout ce qui pilote le launcher :
+
+  | Champ | Rôle | Sans lui |
+  |---|---|---|
+  | `maintenance`, `maintenance_message` | Bandeau de maintenance, blocage du lancement | pas de maintenance |
+  | `online` | `true` = Microsoft, `false` = hors ligne, URL = site Azuriom/AZauth | Microsoft |
+  | `client_id` | Application Azure utilisée pour la connexion Microsoft | identifiant du launcher officiel |
+  | `dataDirectory` | Dossier du jeu sous le dossier de données de l'OS | `luuxcraft` |
+  | `socialLinks` | Liens affichés sur l'accueil | aucun lien |
+  | `modules` (ou `features`) | Bascules par module : `news`, `skins`, `links`, `serverStatus`, `accounts`, `settings` | tout est affiché |
+  | `brand` | Nom, wordmark (`prefix` + `suffix` en dégradé), sous-titre, site | identité intégrée (`src/config/brand.ts`) |
+  | `updater.endpoints` | Surcharge les points de mise à jour (https uniquement) | point dérivé de l'adresse du panel |
+  | `yggdrasil` | Serveur Yggdrasil/authlib-injector, ajoute l'onglet de connexion | méthode non proposée |
+
+  Tout champ inconnu est conservé dans `extra`, rien ne casse s'il en manque un.
 - `GET {baseUrl}/user/{userId}/articles?limit=N` — actualités (`title`, `content` HTML,
   `author`, `publish_date`, image/lien/ordre si présents).
 - `GET {baseUrl}/user/{userId}/instances` — instances (`name`, `url` des fichiers, `loader`,
@@ -46,9 +110,9 @@ ligne.
 ## Architecture
 
 ```
-launcher.config.json        configuration centrale (Rust + frontend)
 src-tauri/src/
-  config.rs                 chargement/validation de la config, chemins
+  config.rs                 adresse du panel, défauts intégrés, chemins
+  provisioning.rs           à quel client du panel ce launcher appartient
   api/                      client HTTP du panel + modèles tolérants + commandes remote_*
   accounts/                 multi-comptes dans `<dossier du jeu>/accounts.json`
   auth.rs                   Microsoft (fenêtre de connexion), Azuriom/AZauth (+ OTP), hors ligne, Yggdrasil
@@ -62,7 +126,8 @@ src-tauri/src/
   system.rs / logging.rs    infos machine, ouverture de dossiers, journalisation
 src/
   store/AppStore.tsx        état global + actions (IPC typé dans lib/ipc.ts)
-  features/*                accueil, instances, comptes, skin 3D (skinview3d/three), paramètres
+  features/*                accueil (jouer + instance), comptes, skins (skinview3d/three), paramètres,
+                            appairage (premier lancement d'un build non provisionné)
   components/*              design system (charte) : boutons, cartes, modales, formulaires…
   styles/index.css          tokens Tailwind v4 + composants de la charte, thème clair
   i18n/fr.ts                textes UI et messages d'erreur par code
@@ -126,32 +191,53 @@ Le launcher utilise `tauri-plugin-updater`. La clé publique est dans `src-tauri
 Ne la perdez pas : sans elle, aucune mise à jour ne pourra être signée pour les launchers déjà
 installés.
 
-Build signé :
+Le point de mise à jour n'est pas un manifeste statique mais le **serveur dynamique du panel** :
+
+```
+{baseUrl}/launcher/update/{{target}}/{{arch}}/{{current_version}}
+```
+
+Il est dérivé de l'adresse du panel (`config.rs` → `updater_endpoints_for`), donc un launcher
+provisionné sur un autre panel prend ses mises à jour de ce panel-là. Le panel répond un `204`
+quand il n'y a rien à installer, et sinon le JSON attendu par le plugin (`version`, `notes`,
+`pub_date`, `url`, `signature`). Un panel peut aussi surcharger la liste par
+`updater.endpoints` dans `/config` : ce qu'il publie gagne sur la valeur dérivée.
+
+Les artefacts de mise à jour sont servis **intacts** : la signature minisign porte sur leurs
+octets exacts, et le bloc de provisionnement n'est ajouté que sur les routes de téléchargement.
+Sous Linux, l'`.AppImage` est à la fois l'installeur et l'artefact signé — c'est pourquoi les
+octets stockés ne sont jamais modifiés.
+
+Comme les mises à jour sont servies par le panel à partir d'un binaire unique, elles sont
+globales : une release, une chaîne de mises à jour, tous les clients.
+
+### Publication
+
+`.github/workflows/deploy.yml` construit les quatre plateformes, les signe et les pousse vers le
+panel via `.github/scripts/panel-release.mjs`. À configurer une fois sur le dépôt :
+
+| Nom | Type | Rôle |
+|---|---|---|
+| `PANEL_URL` | variable | `https://luuxcraft.fr` |
+| `PANEL_BUILD_KEY` | secret | Admin → Configuration → Builds du launcher |
+| `TAURI_SIGNING_PRIVATE_KEY` | secret | contenu de `~/.tauri/luuxcraft-launcher.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | secret | vide si la clé n'en a pas |
+
+Le workflow part sur un tag `v*` ou à la main (canal `stable`/`beta`, notes de version, et la
+possibilité de laisser la release en préparation). La version publiée est celle de
+`src-tauri/tauri.conf.json`, pas celle du tag : c'est elle que tauri utilise pour nommer les
+bundles. La publication est **tout ou rien**, à deux niveaux : le job de publication dépend du job de
+build, donc une plateforme en échec ne publie rien ; et le panel refuse en plus un artefact dont
+les octets manquent ou un artefact de mise à jour sans signature. Si malgré tout une plateforme
+n'a pas d'artefact, le manifeste lui répond « à jour » au lieu d'une URL vide.
+
+Build signé en local, pour vérifier avant de pousser :
 
 ```bash
 export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/luuxcraft-launcher.key)"   # contenu de la clé
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 npm run tauri build
 ```
-
-Les artefacts `*.sig` produits avec les bundles alimentent un manifeste statique :
-
-```json
-{
-  "version": "1.1.0",
-  "notes": "Nouveautés…",
-  "pub_date": "2026-09-13T12:00:00Z",
-  "platforms": {
-    "darwin-aarch64": { "signature": "…", "url": "https://…/LuuxCraft.app.tar.gz" },
-    "darwin-x86_64":  { "signature": "…", "url": "https://…/LuuxCraft.app.tar.gz" },
-    "windows-x86_64": { "signature": "…", "url": "https://…/LuuxCraft-setup.exe" },
-    "linux-x86_64":   { "signature": "…", "url": "https://…/LuuxCraft.AppImage" }
-  }
-}
-```
-
-Renseignez son URL dans `launcher.config.json` → `updater.endpoints`
-(variables `{{target}}`, `{{arch}}`, `{{current_version}}` disponibles).
 
 ## Sécurité
 
