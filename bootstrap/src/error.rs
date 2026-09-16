@@ -1,6 +1,6 @@
 //! Erreurs présentées au joueur.
 //!
-//! Le bootstrap est lancé par un double-clic, sans journal ni interface : la
+//! L'installeur est lancé par un double-clic, sans journal ni interface : la
 //! seule chose que le joueur verra d'un échec est la ligne écrite ici. Chaque
 //! erreur porte donc ce qui a échoué **et** une piste d'action ; un `panic!`
 //! Rust, lui, ne veut rien dire pour lui.
@@ -51,12 +51,6 @@ impl BootstrapError {
         }
     }
 
-    pub fn read(error: &std::io::Error, what: &str) -> Self {
-        Self {
-            message: format!("{what} : {error}"),
-            hint: disk_hint(error),
-        }
-    }
 }
 
 impl fmt::Display for BootstrapError {
@@ -92,18 +86,18 @@ pub fn from_http(url: &str, error: ureq::Error) -> BootstrapError {
     let detail = error.to_string();
     match error {
         ureq::Error::Status(404, _) => BootstrapError::new(format!(
-            "le panel ne connaît pas ce client (404).\n{url}"
+            "le panel ne connaît pas ce serveur (404).\n{url}"
         ))
         .hint(
             "Cet installeur a peut-être été supprimé du panel. \
-             Retéléchargez-le depuis votre espace client.",
+             Retéléchargez-le depuis l'espace de votre serveur.",
         ),
         ureq::Error::Status(401, _) | ureq::Error::Status(402, _) | ureq::Error::Status(403, _) => {
             BootstrapError::new(format!(
                 "le panel a refusé la requête ({detail}).\n{url}"
             ))
             .hint(
-                "L'abonnement de ce client est probablement expiré. \
+                "L'abonnement de ce serveur est probablement expiré. \
                  Le propriétaire du serveur doit le réactiver sur le panel.",
             )
         }

@@ -1,30 +1,29 @@
 name: 'publish'
 
-# Une release du launcher porte deux lignes de produit, et rien d'autre :
+# Une release du launcher porte deux lignes de produit :
 #
-#   bootstrap  l'installeur figé (`bootstrap-installer/`), un binaire par OS.
-#              C'est le seul fichier qu'un joueur télécharge. Il ne contient
-#              aucune identité : le panel lui ajoute 32 octets au téléchargement
-#              pour lui dire de quel tenant il s'agit.
-#   engine     le moteur tauri générique, publié en artefact **portable** :
-#              exe-zip (windows), app-tar-gz (darwin), appimage (linux). Aucun
-#              installeur d'OS n'est produit — ni msi, ni nsis, ni dmg, ni deb,
-#              ni rpm : un installeur écrirait dans Program Files ou /opt, alors
-#              que le moteur doit atterrir dans le dossier du tenant, posé là
-#              par le bootstrap.
+#   moteur      l'application tauri générique, en artefact **portable** —
+#               exe-zip (windows), app-tar-gz (darwin), appimage (linux)
+#   bootstrap   l'installeur Windows de première mise en place, publié vierge
 #
-# Rien n'est compilé par client, et aucune release GitHub n'est créée : les
-# octets vivent dans le R2 du panel, qui les sert.
+# Aucun installeur d'OS n'est produit, ni msi, ni nsis, ni dmg, ni deb, ni rpm :
+# un installeur écrirait dans Program Files ou /opt, alors que chaque client
+# doit pouvoir vivre dans son propre dossier.
+#
+# **Rien n'est compilé par client.** Le moteur est identique pour tous et servi
+# tel quel ; le bootstrap est publié sans identité, et c'est le panel qui en
+# tire une copie par client en remplissant son créneau de 87 octets. Une
+# compilation par (OS, architecture), donc, et pas une de plus.
+#
+# Aucune release GitHub n'est créée : les octets vivent dans le R2 du panel.
 #
 # À configurer une fois sur le dépôt :
 #   Variables  PANEL_URL        https://luuxcraft.fr
 #   Secrets    PANEL_BUILD_KEY  Admin → Configuration → Builds du launcher
 #
-# Aucune clé de signature n'est nécessaire : personne n'en vérifierait une. Le
-# moteur est mis à jour par le bootstrap — cible du raccourci, donc exécuté à
-# chaque lancement — qui compare le SHA-256 du moteur au manifeste du panel et
-# le remplace si besoin. L'intégrité tient à cette empreinte, calculée sur les
-# octets téléversés ici.
+# Aucune clé de signature n'est nécessaire : personne n'en vérifierait une.
+# L'intégrité tient au SHA-256 calculé sur les octets téléversés ici, que le
+# panel publie dans son manifeste.
 
 on:
   workflow_dispatch:
@@ -83,96 +82,10 @@ jobs:
           node .github/scripts/panel-release.mjs open
           echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
-  # L'installeur figé : un binaire par OS, sans interface ni webview, donc sans
-  # les dépendances système du moteur.
-  bootstrap:
-    needs: open-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: 'windows-latest'
-            target: 'windows'
-            arch: 'x86_64'
-            triples: 'host'
-            artifact: 'bootstrap-windows-x86_64.exe'
-          - platform: 'ubuntu-latest'
-            target: 'linux'
-            arch: 'x86_64'
-            triples: 'host'
-            artifact: 'bootstrap-linux-x86_64.bin'
-          # La route de téléchargement ne connaît que l'OS, jamais
-          # l'architecture : un Mac Intel et un Mac Apple Silicon reçoivent le
-          # même fichier, qui doit donc être universel.
-          - platform: 'macos-latest'
-            target: 'darwin'
-            arch: 'universal'
-            triples: 'x86_64-apple-darwin aarch64-apple-darwin'
-            artifact: 'bootstrap-darwin-universal.bin'
-
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: lts/*
-
-      # Aucune dépendance système à installer : le bootstrap n'embarque ni
-      # webview ni TLS système (rustls), c'est tout l'intérêt d'un crate séparé.
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target == 'darwin' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './bootstrap-installer -> target'
-          key: bootstrap-${{ matrix.target }}
-
-      - name: build the bootstrap
-        shell: bash
-        env:
-          TRIPLES: ${{ matrix.triples }}
-          ARTIFACT: ${{ matrix.artifact }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          exes=()
-          for triple in $TRIPLES; do
-            args=(build --release --manifest-path bootstrap-installer/Cargo.toml --message-format json-render-diagnostics)
-            if [ "$triple" != host ]; then args+=(--target "$triple"); fi
-            cargo "${args[@]}" > "cargo-$triple.json"
-            # Le chemin du binaire est lu dans les messages de cargo plutôt que
-            # deviné : le nom du paquet, celui de la cible et le triplet
-            # n'appartiennent pas à ce workflow.
-            exe=$(node -e 'const lines=require("node:fs").readFileSync(process.argv[1],"utf8").split(/\r?\n/).filter(Boolean);const hit=lines.map(l=>JSON.parse(l)).filter(m=>m.reason==="compiler-artifact"&&m.executable).pop();if(!hit){console.error("aucun executable produit par cargo");process.exit(1)}process.stdout.write(hit.executable)' "cargo-$triple.json")
-            # Sous Windows cargo renvoie un chemin à antislashs, que les outils
-            # MSYS de `shell: bash` ne suivent pas.
-            exes+=("${exe//\\//}")
-          done
-          if [ "${#exes[@]}" -gt 1 ]; then
-            lipo -create -output "dist/$ARTIFACT" "${exes[@]}"
-          else
-            cp "${exes[0]}" "dist/$ARTIFACT"
-          fi
-          ls -l "dist/$ARTIFACT"
-
-      - name: upload the bootstrap to the panel
-        shell: bash
-        env:
-          ARTIFACT_PATHS: '["dist/${{ matrix.artifact }}"]'
-          ARTIFACT_ROLE: 'bootstrap'
-          ARTIFACT_TARGET: ${{ matrix.target }}
-          ARTIFACT_ARCH: ${{ matrix.arch }}
-        run: node .github/scripts/panel-release.mjs upload
-
-  # Le moteur générique, en artefact portable sur les trois OS : c'est le
-  # bootstrap qui pose ces octets dans le dossier du tenant, aucun installeur
-  # n'intervient. D'où `--no-bundle` sous Windows — un `-setup.exe` NSIS est un
-  # installeur, il irait écrire dans Program Files, hors de l'isolation par
-  # tenant.
+  # Le moteur générique, en artefact portable sur les trois OS : ces octets
+  # doivent pouvoir être déployés par simple recopie, sans installeur. D'où
+  # `--no-bundle` sous Windows — un `-setup.exe` NSIS est un installeur, il irait
+  # écrire dans Program Files, hors de l'isolation par client.
   engine:
     needs: open-release
     strategy:
@@ -181,9 +94,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `target` et `arch` sont les créneaux du manifeste du panel : le
-          # bootstrap demande le sien et le panel doit y trouver exactement ces
-          # valeurs.
+          # `target` et `arch` sont les créneaux du manifeste du panel : c'est
+          # sous ces valeurs exactes qu'un artefact y est rangé, puis retrouvé.
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin --bundles app'
             target: 'darwin'
@@ -243,11 +155,10 @@ jobs:
         shell: bash
         run: npm run tauri build -- ${{ matrix.args }}
 
-      # Un seul fichier par plateforme, portable, prêt à être posé tel quel par
-      # le bootstrap. L'emballage se fait ici plutôt que dans le bundler tauri :
-      # ce qu'il sait produire, ce sont des installeurs d'OS, et le bootstrap a
-      # besoin d'une archive qu'il puisse simplement extraire dans le dossier du
-      # tenant.
+      # Un seul fichier par plateforme, portable, prêt à être servi tel quel.
+      # L'emballage se fait ici plutôt que dans le bundler tauri : ce qu'il sait
+      # produire, ce sont des installeurs d'OS, alors qu'il faut une archive qui
+      # se déballe simplement dans un dossier.
       - name: package the engine
         id: package
         shell: bash
@@ -268,14 +179,23 @@ jobs:
           case "$TARGET" in
             windows)
               # `--no-bundle` laisse l'exécutable brut : `bundle.resources` est
-              # vide, il se suffit à lui-même. Le zip ne contient que lui, à la
-              # racine — d'où le `cd`, sinon 7-Zip y recopierait toute
-              # l'arborescence `src-tauri/target/release/`.
-              exe="$out/$product.exe"
-              [ -f "$exe" ] || { echo "::error::exécutable introuvable : $exe"; exit 1; }
+              # vide, il se suffit à lui-même.
+              #
+              # Cet exécutable-là porte le nom du paquet cargo
+              # (`luuxcraft-launcher.exe`), pas le nom de produit : tauri ne
+              # renomme qu'en empaquetant, et on n'empaquette plus. Plutôt que de
+              # recopier l'un ou l'autre ici, on prend le seul `.exe` du dossier —
+              # cargo range tout le reste dans des sous-dossiers.
+              shopt -s nullglob
+              exes=("$out"/*.exe)
+              [ "${#exes[@]}" -eq 1 ] || { echo "::error::attendu un exécutable dans $out, trouvé ${#exes[@]}"; exit 1; }
+              # Renommé au nom de produit : c'est ce que le joueur lira dans le
+              # gestionnaire de tâches et dans la cible de son raccourci.
               mkdir -p stage
-              cp "$exe" "stage/$product.exe"
+              cp "${exes[0]}" "stage/$product.exe"
               artifact="dist/engine-windows-$ARCH.zip"
+              # Le zip ne contient que lui, à la racine — d'où le `cd`, sinon
+              # 7-Zip y recopierait toute l'arborescence de `stage`.
               (cd stage && 7z a -tzip -mx=9 "../$artifact" "$product.exe" > /dev/null)
               ;;
             darwin)
@@ -310,9 +230,86 @@ jobs:
         shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.package.outputs.paths }}
-          ARTIFACT_ROLE: 'engine'
           ARTIFACT_TARGET: ${{ matrix.target }}
           ARTIFACT_ARCH: ${{ matrix.arch }}
+        run: node .github/scripts/panel-release.mjs upload
+
+  # Le bootstrap Windows : l'installeur de première mise en place, publié
+  # **vierge**. Le panel en tirera une copie par client en remplissant son
+  # créneau d'identité (87 octets repérés par une chaîne magique, voir
+  # `bootstrap/src/identity.rs`).
+  #
+  # Windows seulement : Linux et macOS s'installent par la commande
+  # `curl … | sh` que le panel sert, qui n'a rien à télécharger d'abord.
+  bootstrap:
+    needs: open-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './bootstrap -> target'
+          key: bootstrap-windows-x86_64
+
+      # L'adresse du panel est la seule chose compilée dans ce binaire : le
+      # créneau ne porte que l'identifiant du client (voir `bootstrap/src/config.rs`).
+      - name: build the bootstrap
+        shell: bash
+        env:
+          LUUXCRAFT_PANEL_URL: ${{ vars.PANEL_URL }}
+        run: cargo build --release --manifest-path bootstrap/Cargo.toml
+
+      # Le panel cherche le créneau par sa chaîne magique et **refuse de
+      # publier** s'il en trouve zéro ou plusieurs. Le vérifier ici fait échouer
+      # le build plutôt qu'un téléchargement, des semaines plus tard.
+      - name: check the identity slot
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=bootstrap/target/release/luuxcraft-bootstrap.exe
+          [ -f "$exe" ] || { echo "::error::binaire introuvable : $exe"; exit 1; }
+          node -e '
+            const fs = require("node:fs");
+            const magic = Buffer.from("LXCBOOTSTRAP-TENANT-V1");
+            const bytes = fs.readFileSync(process.argv[1]);
+            let count = 0;
+            for (let at = bytes.indexOf(magic); at !== -1; at = bytes.indexOf(magic, at + 1)) count++;
+            if (count !== 1) {
+              console.error(`::error::créneau d\x27identité trouvé ${count} fois, attendu exactement 1`);
+              process.exit(1);
+            }
+            console.log("créneau d\x27identité : 1 occurrence, injectable");
+          ' "$exe"
+
+      - name: name the bootstrap
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Le nom est décoratif : le panel le remplace par celui du client au
+          # téléchargement, et le bootstrap lit son identité dans sa propre
+          # mémoire, jamais dans son nom de fichier.
+          artifact="dist/bootstrap-windows-x86_64.exe"
+          cp bootstrap/target/release/luuxcraft-bootstrap.exe "$artifact"
+          ls -l "$artifact"
+          node -e 'process.stdout.write("paths="+JSON.stringify([process.argv[1]])+"\n")' "$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: upload the bootstrap to the panel
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.package.outputs.paths }}
+          ARTIFACT_TARGET: 'windows'
+          ARTIFACT_ARCH: 'x86_64'
         run: node .github/scripts/panel-release.mjs upload
 
   # C'est `needs` qui donne le « tout ou rien » : un seul job de build en échec
@@ -321,7 +318,7 @@ jobs:
   publish-release:
     # `open-release` est dans les besoins pour son `outputs.version`, repris
     # dans le résumé.
-    needs: [open-release, bootstrap, engine]
+    needs: [open-release, engine, bootstrap]
     # Un push de tag publie toujours. Le test ne peut pas s'écrire
     # `inputs.publish != false` : hors `workflow_dispatch` l'entrée est nulle,
     # et GitHub convertit `null` et `false` en 0 — la comparaison serait fausse
@@ -345,10 +342,14 @@ jobs:
             echo
             echo "Canal : \`${{ inputs.channel || 'stable' }}\`"
             echo
-            echo "Les launchers installés remplaceront leur moteur au prochain lancement : le bootstrap"
-            echo "compare le SHA-256 publié à celui du moteur posé chez le joueur."
+            echo "Première installation :"
             echo
-            echo "Les nouveaux téléchargements passent par"
-            echo "\`/api/v1/launchers/<id du tenant>/download?os=windows|linux|macos\`,"
-            echo "qui sert le bootstrap figé avec l'overlay du tenant."
+            echo "- **Windows** — \`/api/v1/launchers/<id du tenant>/bootstrap?os=windows\`,"
+            echo "  l'installeur au nom du client (le panel remplit son créneau d'identité à la"
+            echo "  première demande, puis sert le même fichier à tout le monde)."
+            echo "- **Linux et macOS** — \`curl -fsSL <panel>/api/v1/launchers/<id>/install.sh | sh\`."
+            echo
+            echo "Les launchers déjà installés récupèrent cette version tout seuls : le moteur"
+            echo "compare sa version à celle du manifeste au démarrage et remplace son propre"
+            echo "exécutable, sans jamais toucher au pack client ni aux données du joueur."
           } >> "$GITHUB_STEP_SUMMARY"

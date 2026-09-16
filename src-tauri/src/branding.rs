@@ -5,7 +5,8 @@
 //! attendre `/config` pour savoir quoi écrire dans la barre de titre ferait
 //! s'ouvrir la fenêtre sous le nom générique du moteur, et un lancement hors
 //! ligne resterait anonyme pour toujours. Ils viennent de `client_config.json`
-//! et de l'icône posés à côté du binaire par le bootstrap.
+//! et de l'icône attendus à côté du binaire — voir `client_config`, qui dit
+//! aussi pourquoi plus rien ne les y écrit aujourd'hui.
 //!
 //! L'identité est donc connue **avant** la première image : la fenêtre est
 //! créée invisible, habillée ici, puis affichée (voir `lib::run`).
@@ -13,11 +14,11 @@
 //! Ce qui se joue ailleurs :
 //!
 //! - **macOS** : le nom et l'icône du Dock viennent d'`Info.plist` et de
-//!   `Resources/*.icns`, que le bootstrap a écrits en générant le bundle.
-//!   `set_icon` n'a de toute façon pas d'effet sur macOS, où une fenêtre ne
-//!   porte pas d'icône.
+//!   `Resources/*.icns`, écrits dans le bundle. `set_icon` n'a de toute façon
+//!   pas d'effet sur macOS, où une fenêtre ne porte pas d'icône.
 //! - **Windows** : le raccourci du menu Démarrer et l'entrée de désinstallation
-//!   sont posés par le bootstrap, qui est l'installeur.
+//!   appartiennent à l'installation, pas au moteur — et plus rien ne les pose
+//!   depuis le retrait du bootstrap.
 //! - **Linux** : le moteur est une AppImage, c'est-à-dire un simple fichier
 //!   exécutable dont le bureau ne sait rien. C'est donc ici, au démarrage, que
 //!   l'entrée de bureau et l'icône du thème sont posées — voir `desktop`.
@@ -94,8 +95,8 @@ fn refresh_desktop_entry(
     crate::desktop::refresh(app, launcher_dir, name, icon);
 }
 
-/// Ailleurs, l'identité est portée par le conteneur : le raccourci posé par le
-/// bootstrap sous Windows, le bundle `.app` sous macOS.
+/// Ailleurs, l'identité est portée par le conteneur : le raccourci de
+/// l'installation sous Windows, le bundle `.app` sous macOS.
 #[cfg(not(target_os = "linux"))]
 fn refresh_desktop_entry(
     _app: &AppHandle,

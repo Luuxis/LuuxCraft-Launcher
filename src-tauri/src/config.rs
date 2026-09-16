@@ -5,9 +5,10 @@
 //! toggles, instances and news all come from the API at runtime (see `api`).
 //!
 //! Ce que l'API ne peut pas fournir, c'est sa propre adresse ni le tenant à qui
-//! ce moteur appartient. Rien de tout cela n'est compilé : le bootstrap pose
-//! ces deux valeurs sur le disque, dans le pack client, et
-//! `client_config::ClientConfig` les relit au démarrage.
+//! ce moteur appartient. Rien de tout cela n'est compilé : ces deux valeurs sont
+//! attendues sur le disque, dans le pack client, et
+//! `client_config::ClientConfig` les relit au démarrage. Ce qui les y écrit
+//! reste à définir — voir `client_config`.
 //!
 //! The rest of this module is made of plain defaults, applied until the panel
 //! (or the user's settings) says otherwise.

@@ -13,47 +13,61 @@ La distribution repose sur trois objets indépendants, produits et servis sépar
 
 | Couche | Ce que c'est | Qui la produit | Ce qu'elle sait du tenant |
 |---|---|---|---|
-| **Bootstrap** | `bootstrap-installer/`, un petit binaire Rust sans interface ni webview | la CI, un par OS | 16 octets d'UUID ajoutés au téléchargement |
 | **Moteur** | ce dépôt : l'application tauri, générique | la CI, un artefact portable par plateforme | rien du tout |
+| **Installeur** | `bootstrap/` (Windows) et le script `sh` (Linux, macOS) | la CI pour le premier, le panel pour le second | l'identifiant, et rien d'autre |
 | **Pack client** | `client_config.json`, `icon.png`, `icon.ico`, `icon.icns` | le panel, à la volée | tout |
 
-Le joueur ne télécharge **que le bootstrap**. Les octets stockés dans le R2 du panel sont les
-mêmes pour tout le monde : le panel ajoute au bootstrap, pendant le streaming, un **overlay de
-32 octets** en fin de fichier :
+Le joueur ne télécharge pas le moteur : il télécharge un **installeur**, qui va chercher le
+moteur et pose le pack client à côté.
 
 ```
-[ LXCBOOT1 ][ 16 octets d'UUID ][ 1TOOBCXL ]
+Windows        GET  {panel}/api/v1/launchers/{tenant_id}/bootstrap?os=windows
+Linux, macOS   curl -fsSL {panel}/api/v1/launchers/{tenant_id}/install.sh | sh
 ```
 
-C'est tout ce qui distingue le téléchargement d'un serveur de celui d'un autre. Le bootstrap
-relit ces 32 octets dans `std::env::current_exe()`, ce qui résiste au renommage du fichier,
-puis demande au panel le manifeste du tenant :
+Les deux font le même travail — manifeste, moteur, pack client, intégration au bureau,
+lancement — et aucun des deux ne revient ensuite : les raccourcis pointent sur le moteur, qui
+se met à jour lui-même.
+
+Le bootstrap Windows est le **seul** fichier de toute cette chaîne dont les octets dépendent du
+serveur : le panel remplit son créneau d'identité de 87 octets une fois par client, puis sert le
+même fichier à tous ses joueurs. Voir `bootstrap/README.md` — notamment pourquoi ce créneau est
+au milieu des données et non en fin de fichier, ce qui laisse la porte ouverte à la signature
+Authenticode.
+
+Le moteur, lui, ne connaît son tenant qu'en lisant `client_config.json` dans le pack client posé
+à côté de lui. Aucune identité n'est compilée, et rien n'est demandé au joueur : un moteur sans
+pack client est une erreur explicite, pas un écran d'appairage.
+
+Le manifeste du tenant décrit ce qu'une installation doit contenir — la version du moteur et les
+fichiers du pack, chacun avec son `sha256`. C'est la seule source des trois lecteurs : le
+bootstrap, le script, et le moteur quand il se met à jour.
 
 ```
-GET {api_base}/api/v1/launchers/{tenant_id}/manifest
+GET {api_base}/api/v1/launchers/{tenant_id}/manifest?os=…&arch=…
+GET {api_base}/api/v1/launchers/{tenant_id}/manifest?os=…&arch=…&format=text   (pour le script sh)
 ```
-
-Le manifeste décrit la version du moteur à installer et les fichiers du pack client, chacun
-avec son `sha256`. Le bootstrap installe ce qui manque, remplace ce dont l'empreinte a changé,
-et lance le moteur. C'est lui, et lui seul, qui crée les raccourcis, l'entrée de bureau XDG ou
-le `.app` macOS — **sur la machine du joueur**, avec le nom et l'icône du serveur. Aucun
-repackaging côté serveur, donc aucun octet à re-signer.
-
-Le moteur, lui, ne connaît son tenant qu'en lisant `client_config.json` dans le pack client
-posé à côté de lui. Aucune identité n'est compilée, et rien n'est demandé au joueur : un
-moteur sans pack client est une erreur explicite, pas un écran d'appairage.
 
 ### Où ça s'installe
 
-| OS | Racine installée | Données d'exécution |
-|---|---|---|
-| Windows | `%LOCALAPPDATA%\Programs\<slug>\` | `%APPDATA%\.<slug>` |
-| Linux | `~/.local/share/<slug>/` | `~/.<slug>` |
-| macOS | `~/Applications/<nom du serveur>.app/` | `~/.<slug>` |
+| OS | Racine installée | Pack client | Données d'exécution |
+|---|---|---|---|
+| Windows | `%LOCALAPPDATA%\Programs\<slug>\` | `<racine>\client\` | `%APPDATA%\.<slug>` |
+| Linux | `$XDG_DATA_HOME/<slug>/` | `<racine>/client/` | `~/.<slug>` |
+| macOS | `~/Applications/<nom du serveur>.app` | `~/Library/Application Support/luuxcraft/installs/<clé>/` | `~/.<slug>` |
+
+Aucune de ces racines n'exige de droits administrateur, et aucune n'est partagée entre serveurs.
 
 Le `slug` vient du panel (`launcher_configs.slug`), jamais d'un calcul côté client : c'est lui
-qui sépare deux serveurs installés sur la même machine. La racine contient `engine/` (le
-moteur), `client/` (le pack client), `.engine-version` et `.pack-version`.
+qui sépare deux serveurs installés sur la même machine. Sous Windows et Linux, la racine contient
+`engine/` (le moteur), `client/` (le pack client), `.engine-version` et `.pack-version`.
+
+**macOS est l'exception, et c'est délibéré.** Un `.app` est remplacé en entier quand le moteur se
+met à jour : un pack posé dedans disparaîtrait avec lui, et y écrire casserait de toute façon la
+signature du bundle. Le pack vit donc à côté, dans un dossier dont le nom est l'empreinte du
+chemin du bundle — une clé déterministe, que le script d'installation et le moteur calculent
+chacun de leur côté, ce qui évite un index partagé. Le bundle publié n'est jamais modifié : il
+est seulement **renommé** au nom du serveur, ce qui ne touche aucun de ses octets.
 
 La racine du **jeu** reste partagée entre serveurs, volontairement : elle pèse des gigaoctets
 et deux serveurs y réutilisent les mêmes versions, bibliothèques et assets. Les comptes, les
@@ -63,10 +77,11 @@ launchers ne pourraient pas tourner en même temps.
 ### Mise à jour différentielle
 
 - **Pack client modifié** → seuls les fichiers dont le `sha256` diffère sont réécrits ; le
-  moteur n'est pas retéléchargé.
-- **Moteur modifié** → seul l'artefact du moteur est remplacé ; `client/` et les dossiers de
-  jeu sont intacts.
-- **Modpack** → inchangé, déjà différentiel par hash.
+  moteur n'est pas retéléchargé. Un changement de nom ou de logo coûte donc quelques
+  kilo-octets, pas cinquante méga-octets.
+- **Moteur modifié** → seul l'exécutable du moteur est remplacé ; `client/` et les dossiers de
+  jeu restent intacts.
+- **Modpack** → déjà différentiel par hash, pris en charge par le moteur.
 
 ## Configuration
 
@@ -75,7 +90,7 @@ connexion, `client_id` Azure, dossier du jeu, liens sociaux, modules actifs, ins
 actualités. Rien n'est dupliqué dans le dépôt.
 
 Les deux choses que l'API ne peut pas s'auto-annoncer — son adresse et le tenant — viennent du
-pack client (`client_config.json`), écrit par le bootstrap à l'installation :
+pack client (`client_config.json`), attendu à côté du binaire :
 
 ```json
 {
@@ -90,15 +105,16 @@ pack client (`client_config.json`), écrit par le bootstrap à l'installation :
 ```
 
 Aucune variable de build ne les remplace : il n'y a plus de `LUUXCRAFT_API_URL` ni de
-`LUUXCRAFT_USER_ID`. Seul le **bootstrap** porte une adresse de panel compilée, parce qu'il
-doit bien commencer quelque part.
+`LUUXCRAFT_USER_ID`, et aucune adresse de panel n'est compilée nulle part dans le moteur. C'est
+ce qui rend le même binaire utilisable par tous les serveurs. Ce fichier arrive sur le disque du
+joueur par l'installeur — le bootstrap Windows ou le script `sh` — et il est le seul à savoir
+quel serveur installer.
 
 `src-tauri/src/config.rs` garde les constantes qu'aucune API ne fournit : `YGGDRASIL_SERVER`
 (optionnel, le serveur legacy de Mojang étant arrêté) et les valeurs par défaut des réglages
 (mémoire, fenêtre, téléchargements, statut serveur, actualités) appliquées tant que
-l'utilisateur n'a rien changé. Le moteur ne connaît aucune adresse de mise à jour : c'est le
-bootstrap qui interroge le panel du pack client, donc un launcher installé depuis un autre
-panel prend ses mises à jour de ce panel-là.
+l'utilisateur n'a rien changé. Le moteur ne connaît aucune adresse de mise à jour et ne se met
+pas à jour lui-même.
 
 Le titre de la fenêtre et l'icône sont appliqués depuis le pack **local**, avant le premier
 rendu : rien n'est téléchargé pour brander la fenêtre, et le nom générique ne clignote pas au
@@ -136,9 +152,10 @@ launcher. Le dernier instantané est mis en cache sur disque pour le mode hors l
 ## Architecture
 
 ```
-bootstrap-installer/          l'installeur figé : overlay, manifeste, installation, raccourcis
+bootstrap/                  installeur Windows autonome (voir bootstrap/README.md)
 src-tauri/src/
   client_config.rs          lecture du pack client local (tenant, panel, nom, icône)
+  update.rs                 mise à jour du moteur par lui-même
   config.rs                 défauts intégrés, chemins scopés au tenant
   desktop.rs                entrée de bureau et icône XDG (Linux)
   api/                      client HTTP du panel + modèles tolérants + commandes remote_*
@@ -176,7 +193,6 @@ npm test                                                        # vitest (fronte
 npm run typecheck
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml -- --ignored     # API réelle, Java local, Microsoft
-cargo test --manifest-path bootstrap-installer/Cargo.toml
 ```
 
 ## Comptes et connexion Microsoft
@@ -214,54 +230,75 @@ compte réellement expiré est marqué « reconnexion requise ».
 
 ## Mises à jour automatiques
 
-**C'est le bootstrap qui met le moteur à jour**, pas le moteur lui-même. Le raccourci du joueur
-pointe sur le bootstrap, qui est donc exécuté à chaque lancement : il relit le manifeste du
-tenant, compare le `sha256`
-annoncé pour le moteur à celui du moteur posé sur le disque, remplace les octets s'ils
-diffèrent, puis lance le moteur. Une seule mécanique de mise à jour, la même pour le moteur et
-pour le pack client.
+Le moteur se met à jour **lui-même** (`src-tauri/src/update.rs`). Vingt secondes après le
+démarrage, il compare sa version à celle du manifeste du serveur ; si elles diffèrent, il
+télécharge le nouveau bundle, vérifie son `sha256`, et remplace son propre exécutable. La
+nouvelle version prend effet au lancement suivant — rien n'est redémarré sous les pieds du
+joueur, et rien n'est tenté pendant que Minecraft tourne.
+
+Ce qui est remplacé, et ce qui ne l'est jamais :
+
+| Système | Remplacé | Laissé intact |
+|---|---|---|
+| Windows | `engine\<Nom>.exe` | `client\`, `%APPDATA%\.<slug>` |
+| Linux | l'AppImage installée | `client/`, `~/.<slug>` |
+| macOS | le bundle `.app` | `~/Library/Application Support/luuxcraft/installs/<clé>`, `~/.<slug>` |
+
+L'identité du serveur est **toujours** hors de ce qui est remplacé : une mise à jour ne peut pas
+faire perdre au launcher le serveur auquel il appartient, ni les comptes du joueur.
+
+### Pourquoi pas `tauri-plugin-updater`
+
+Le greffon officiel a été essayé puis écarté, pour deux raisons qui ne se contournent pas :
+
+1. **Il ne sait pas mettre à jour un exécutable portable sous Windows.** Son installateur attend
+   un NSIS ou un MSI, y compris à l'intérieur d'un zip
+   ([documentation](https://v2.tauri.app/plugin/updater/)). Or un installeur d'OS écrit dans
+   `Program Files` — un emplacement partagé — alors que chaque serveur doit vivre dans son
+   propre dossier. L'adopter reviendrait à abandonner l'isolation par serveur, qui est la raison
+   d'être de toute cette distribution.
+2. **Il impose une paire de clés minisign** et un second manifeste à son format. Cela vaudrait
+   la peine pour les trois plateformes ; pour les deux qu'il couvre, ça ferait deux mécanismes
+   de mise à jour, deux formats de manifeste et une clé privée de plus à protéger — alors que
+   Windows resterait de toute façon à la charge de `update.rs`.
+
+Le jour où le moteur Windows serait distribué autrement, le greffon redevient le bon choix pour
+les trois plateformes : il suffira de signer les artefacts et de servir un `latest.json`.
+
+L'intégrité repose donc sur le `sha256` publié dans le manifeste, servi en https, et calculé sur
+les octets téléversés par la CI. L'URL de téléchargement est vérifiée comme étant sur le panel du
+pack client — sans quoi l'empreinte, qui vient de la même réponse, ne protégerait de rien.
 
 Le moteur est publié en artefact **portable** — un exécutable zippé, un `.app` empaqueté, un
-AppImage — jamais en installeur d'OS. Un installeur écrirait dans `Program Files` ou `/opt`,
-hors du dossier propre au tenant ; c'est précisément ce que l'isolation par tenant interdit.
-
-Il n'y a **aucune signature minisign** : rien ne la vérifierait plus. L'intégrité repose sur le
-`sha256` publié dans le manifeste, que le bootstrap contrôle avant de mettre le fichier en
-place — il écrit sous un nom temporaire et ne renomme qu'après vérification, si bien qu'un
-moteur à moitié téléchargé n'est jamais lancé.
-
-Les octets du moteur sont servis **intacts**, identiques pour tous les tenants : l'empreinte
-publiée porte sur eux, et c'est une raison de plus pour que l'identité du serveur vive dans le
-pack client et non dans le binaire — une mise à jour ne peut rien lui faire perdre.
-
-Comme le moteur est unique, les mises à jour sont globales : une release, une chaîne de mises à
-jour, tous les serveurs. Le pack client, lui, se met à jour de son côté, au démarrage, fichier
-par fichier.
+AppImage — jamais en installeur d'OS, pour la même raison qu'au point 1.
 
 ## Publication
 
 `.github/workflows/deploy.yml` publie **deux lignes de produit** vers le panel, via
 `.github/scripts/panel-release.mjs` :
 
-| Rôle | Ce qui est construit | Formats |
+| Job | Ce qui est construit | Formats |
 |---|---|---|
-| `bootstrap` | `cargo build --release` dans `bootstrap-installer/` | `exe` (windows), `bin` (linux, darwin) |
 | `engine` | `tauri build`, artefacts portables uniquement | `exe-zip` (windows), `app-tar-gz` (darwin), `appimage` (linux) |
+| `bootstrap` | `cargo build` du crate `bootstrap/`, publié **vierge** | `bootstrap-exe` (windows x86_64) |
 
 Il n'y a **ni nsis, ni msi, ni dmg, ni deb, ni rpm** : rien n'installe le moteur par le
-gestionnaire de paquets de l'OS, c'est le bootstrap qui le pose dans le dossier du tenant. D'où
-le détail de chaque format :
+gestionnaire de paquets de l'OS, il doit pouvoir se déployer par simple recopie dans le dossier
+d'un client. D'où le détail de chaque format :
 
 - **windows** — `tauri build --no-bundle`, puis `LuuxCraft Launcher.exe` zippé seul, à la
   racine de l'archive. `bundle.resources` est vide : l'exécutable se suffit à lui-même.
 - **darwin** — `--bundles app` donne un `.app`, que la CI empaquette en `.app.tar.gz` en
   préservant les permissions Unix, sans quoi le Mach-O perdrait son bit exécutable.
 - **linux** — l'`.AppImage` est déjà un fichier unique et portable, servi tel quel.
+- **bootstrap** — un `.exe` nu, sans identité. Le job vérifie en plus que son créneau
+  d'identité apparaît **exactement une fois** dans le binaire : le panel refuse de publier un
+  modèle ambigu, et l'apprendre dans la CI vaut mieux que sur un téléchargement.
 
-Le bootstrap macOS est un binaire **universel** (`lipo` de `x86_64` + `aarch64`) : la route de
-téléchargement du panel ne connaît que l'OS, jamais l'architecture de la machine du visiteur.
-Le moteur, lui, est publié par architecture, parce que le manifeste a un créneau par
-`target`/`arch`.
+Le moteur est publié **par architecture**, parce que le manifeste du panel a un créneau par
+`target`/`arch`. La route de téléchargement, elle, ne connaît que l'OS — un navigateur ne sait
+pas dire l'architecture de la machine — et sert donc l'architecture la plus probable pour la
+cible demandée (`universal` d'abord sous macOS, `x86_64` ailleurs).
 
 À configurer une fois sur le dépôt :
 
@@ -270,7 +307,11 @@ Le moteur, lui, est publié par architecture, parce que le manifeste a un créne
 | `PANEL_URL` | variable | `https://luuxcraft.fr` |
 | `PANEL_BUILD_KEY` | secret | Admin → Configuration → Builds du launcher |
 
-Une variable et un secret, c'est tout : **aucune clé de signature** — le bootstrap se fie au
+`PANEL_URL` sert deux fois : à savoir où téléverser, et comme adresse du panel **compilée dans le
+bootstrap** (`LUUXCRAFT_PANEL_URL`). Un bootstrap construit contre le mauvais panel ne se verrait
+qu'une fois chez les joueurs.
+
+Une variable et un secret, c'est tout : **aucune clé de signature** — l'intégrité tient au
 `sha256` du manifeste — et **aucun identifiant de stockage à fournir**. Les
 octets sont téléversés en multipart vers le panel, qui les écrit par sa propre liaison R2 — la même qui les
 relit ensuite pour vérifier. Un artefact accepté est donc forcément un artefact visible, là où
@@ -284,11 +325,6 @@ possibilité de laisser la release en préparation). La version publiée est cel
 niveaux : le job de publication dépend des jobs de build, donc une plateforme en échec ne
 publie rien ; et le panel refuse en plus un artefact dont les octets manquent ou dont la taille
 ne correspond pas à celle annoncée.
-
-Le bootstrap est refait à chaque release même quand son code n'a pas bougé : une release est un
-lot complet, et c'est le lot publié que le panel sert. Changer le bootstrap est en revanche un
-acte rare et lourd — il est déjà installé chez les joueurs et ne se met pas à jour tout seul,
-seul le moteur le fait.
 
 **Relancer un build écrase la version.** Le job `open-release` supprime les artefacts de
 l'exécution précédente — octets R2 compris — et remet la release en préparation, même si elle
@@ -306,8 +342,28 @@ Build local, pour vérifier avant de pousser — rien à signer, rien à exporte
 npm run tauri build -- --no-bundle            # windows : l'exécutable brut, à zipper
 npm run tauri build -- --bundles app          # macOS : le .app, à empaqueter en .app.tar.gz
 npm run tauri build -- --bundles appimage     # linux : l'AppImage, portable tel quel
-cargo build --release --manifest-path bootstrap-installer/Cargo.toml
+cargo build --release --manifest-path bootstrap/Cargo.toml   # l'installeur Windows
 ```
+
+### Ajouter une architecture
+
+Trois endroits, dans cet ordre :
+
+1. la matrice du job `engine` dans `.github/workflows/deploy.yml` (`target`, `arch`, `triple`) ;
+2. `ARTIFACT_ARCHES` côté panel (`src/lib/launcherArtifacts.ts`), qui refuse ce qu'il ne connaît
+   pas — c'est ce qui empêche un job mal câblé de publier dans un créneau fantôme ;
+3. `ARCH_PREFERENCE` (`src/services/LauncherReleaseService.ts`) si la nouvelle architecture doit
+   servir de repli quand l'appelant n'en annonce pas.
+
+Rien à changer côté client : le bootstrap et le script annoncent déjà leur architecture réelle,
+et le manifeste leur répond dans le créneau correspondant.
+
+### Ajouter une plateforme
+
+En plus des trois points ci-dessus : `ARTIFACT_TARGETS`, `FORMAT_BY_SUFFIX` et
+`engineFormatForTarget` côté panel, puis un installeur pour cette plateforme — soit une branche
+du script `sh` (`src/lib/installScript.ts`), soit un bootstrap, selon ce que la plateforme rend
+praticable. Le moteur, lui, n'a rien à apprendre : il lit son pack à côté de lui.
 
 ## Sécurité
 
@@ -316,12 +372,13 @@ cargo build --release --manifest-path bootstrap-installer/Cargo.toml
   des secrets de session.
 - CSP stricte (`src-tauri/tauri.conf.json`), HTML des actualités filtré par liste blanche,
   liens ouverts uniquement en `http(s)` via le navigateur.
-- Fichiers d'instance vérifiés par taille et SHA-1 (crust_core) ; moteur et pack client
-  vérifiés par SHA-256 face au manifeste du panel, servi en https.
-- Tout ce que le bootstrap télécharge est vérifié par SHA-256 avant d'être mis en place, et
-  écrit sous un nom temporaire puis renommé : un moteur à moitié téléchargé n'est jamais lancé.
-- L'overlay n'est pas signé et n'a pas à l'être : il ne contient qu'un identifiant public, et
-  qui peut le réécrire peut de toute façon réécrire l'exécutable entier.
+- Fichiers d'instance vérifiés par taille et SHA-1 (crust_core).
+- Le moteur et le pack client ont un SHA-256 publié dans le manifeste du panel, servi en https,
+  vérifié par les trois lecteurs : le bootstrap Windows, le script `sh`, et le moteur quand il
+  se met à jour. Rien n'est mis en place — ni lancé — avant que l'empreinte corresponde.
+- Le script `sh` n'exécute jamais une valeur venue de l'API : slug borné à `[a-z0-9-]`,
+  empreintes à 64 hexadécimaux, URL obligatoirement sur le panel, fichiers du pack pris dans une
+  liste fermée. Un serveur nommé `Launcher; rm -rf ~` ne produit qu'un nom de dossier étrange.
 
 ## Logs
 

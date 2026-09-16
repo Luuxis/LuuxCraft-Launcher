@@ -1,8 +1,8 @@
 //! Intégration au bureau Linux (standard XDG).
 //!
-//! Sous Windows et macOS, l'identité du tenant est portée par le conteneur : le
-//! bootstrap écrit un raccourci et une entrée de désinstallation, le bundle
-//! `.app` porte son `Info.plist` et son `.icns`. Une AppImage, elle, n'est
+//! Sous Windows et macOS, l'identité du tenant est portée par le conteneur : un
+//! raccourci et une entrée de désinstallation d'un côté, l'`Info.plist` et le
+//! `.icns` du bundle `.app` de l'autre. Une AppImage, elle, n'est
 //! qu'un fichier exécutable : le bureau ne sait rien d'elle tant que personne
 //! ne le lui a dit. Sans ce module, le joueur n'a ni entrée dans son menu
 //! d'applications, ni icône dans son dock — juste un fichier à double-cliquer.

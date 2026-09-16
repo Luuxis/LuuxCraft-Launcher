@@ -3,5 +3,4 @@ fn main() {
     // sans ces lignes, cargo ne recompilerait pas quand un build la change.
     println!("cargo:rerun-if-env-changed=LUUXCRAFT_PANEL_URL");
     println!("cargo:rerun-if-env-changed=PANEL_URL");
-    println!("cargo:rerun-if-env-changed=LUUXCRAFT_BUNDLE_ID_PREFIX");
 }

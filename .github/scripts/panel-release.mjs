@@ -2,24 +2,25 @@
 /**
  * Publication d'une version du launcher vers le panel LuuxCraft.
  *
- * Une release porte **deux lignes de produit**, et rien d'autre :
+ * Une release porte **deux lignes de produit**, et seulement deux :
  *
- *   bootstrap  l'installeur figé (`bootstrap-installer/`), un par OS. C'est lui
- *              que le joueur télécharge ; le panel lui ajoute à la volée les 32
- *              octets qui désignent le tenant. Il ne contient aucune identité.
- *   engine     le moteur tauri générique, livré en artefact **portable**
- *              (`exe-zip`, `app-tar-gz`, `appimage`) : il n'est jamais installé
- *              par un installeur d'OS, c'est le bootstrap qui le pose et qui le
- *              remplace quand le SHA-256 du manifeste ne correspond plus.
+ * - le **moteur** tauri générique, livré en artefact **portable** (`exe-zip`,
+ *   `app-tar-gz`, `appimage`) et jamais sous forme d'installeur d'OS — un
+ *   installeur écrirait dans un emplacement partagé, alors que chaque client
+ *   doit pouvoir vivre dans son propre dossier ;
+ * - le **bootstrap Windows** (`bootstrap-exe`), l'installeur de première mise
+ *   en place, publié **vierge**.
  *
- * Aucun artefact n'est spécifique à un client : ni ici, ni dans les octets
- * stockés. L'identité vient du pack client, servi à part par le panel.
+ * Aucun artefact n'est spécifique à un client. Le bootstrap le devient au
+ * moment où le panel en tire une copie et remplit son créneau d'identité (87
+ * octets), ce qui se produit une fois par client — jamais ici, et jamais
+ * pendant un téléchargement.
  *
  * Trois sous-commandes, appelées par `.github/workflows/deploy.yml` :
  *
  *   open     ouvre la release de cette version, en écrasant ce qui existait
- *   upload   téléverse les artefacts d'un couple (rôle, plateforme)
- *   publish  publie la release — c'est là que les launchers installés la voient
+ *   upload   téléverse les artefacts d'une plateforme
+ *   publish  publie la release — c'est là que le panel commence à la servir
  *
  * **`open` écrase** : relancer le workflow sur une version déjà construite —
  * publiée ou non — supprime ses artefacts et la remet en préparation, pour que
@@ -40,7 +41,7 @@ import { basename } from 'node:path'
 const BUILD_KEY_HEADER = 'X-Launcher-Build-Key'
 
 /**
- * Formats publiables, par rôle (contrat §5).
+ * Formats publiables.
  *
  * Cette table est un **filtre**, pas seulement une nomenclature : un build peut
  * laisser d'autres fichiers à côté de l'artefact attendu, et rien de ce qui
@@ -50,17 +51,16 @@ const BUILD_KEY_HEADER = 'X-Launcher-Build-Key'
  * `.app.tar.gz` doit gagner sur `.tar.gz`, et `.zip` passe en dernier pour ne
  * jamais rafler un nom que les entrées précédentes reconnaissent déjà.
  */
-const FORMATS = {
-    bootstrap: [
-        ['.exe', 'exe'],
-        ['.bin', 'bin'],
-    ],
-    engine: [
-        ['.app.tar.gz', 'app-tar-gz'],
-        ['.appimage', 'appimage'],
-        ['.zip', 'exe-zip'],
-    ],
-}
+const FORMATS = [
+    ['.app.tar.gz', 'app-tar-gz'],
+    ['.appimage', 'appimage'],
+    ['.zip', 'exe-zip'],
+    // Le bootstrap Windows, publié vierge : le panel en tire une copie par
+    // client en remplissant son créneau d'identité. C'est le seul `.exe` de la
+    // release — le moteur Windows voyage zippé, et aucun installeur NSIS n'est
+    // produit.
+    ['.exe', 'bootstrap-exe'],
+]
 
 function env(name, { required = true } = {}) {
     const value = process.env[name]?.trim()
@@ -130,9 +130,9 @@ async function readVersion() {
 }
 
 /** Format attendu par le panel pour ce fichier, ou `null` s'il est hors périmètre. */
-function formatOf(filename, role) {
+function formatOf(filename) {
     const name = filename.toLowerCase()
-    for (const [suffix, format] of FORMATS[role]) {
+    for (const [suffix, format] of FORMATS) {
         if (name.endsWith(suffix)) return format
     }
     return null
@@ -144,10 +144,9 @@ function formatOf(filename, role) {
  * Les répertoires sont écartés : sous macOS la liste peut contenir le bundle
  * `.app` lui-même, qui est une arborescence et non un fichier. Ce n'est pas un
  * oubli qu'il ne soit pas téléversé — c'est le `.app.tar.gz` voisin qui porte
- * le même contenu sous forme de fichier, et c'est lui que le bootstrap déballe
- * pour fabriquer le `.app` du tenant sur la machine du joueur.
+ * le même contenu sous forme de fichier, et c'est lui que le panel sert.
  */
-async function collectArtifacts(paths, role) {
+async function collectArtifacts(paths) {
     const artifacts = []
 
     for (const path of paths) {
@@ -160,9 +159,9 @@ async function collectArtifacts(paths, role) {
             console.log(`  – ${basename(path)} ignoré (répertoire)`)
             continue
         }
-        const format = formatOf(basename(path), role)
+        const format = formatOf(basename(path))
         if (!format) {
-            console.log(`  – ${basename(path)} ignoré (hors périmètre ${role})`)
+            console.log(`  – ${basename(path)} ignoré (format non publiable)`)
             continue
         }
         artifacts.push({ path, format })
@@ -243,7 +242,7 @@ async function readFull(handle, buffer) {
  * empreinte SHA-256 est calculée au passage — d'où son envoi à l'assemblage
  * plutôt qu'à l'enregistrement, ce qui évite une seconde lecture complète.
  */
-async function uploadOne(version, artifact, { role, target, arch }) {
+async function uploadOne(version, artifact, { target, arch }) {
     const stats = await stat(artifact.path)
     const filename = basename(artifact.path)
     if (stats.size === 0) fail(`artefact vide : ${filename}`)
@@ -252,15 +251,11 @@ async function uploadOne(version, artifact, { role, target, arch }) {
         body: { filename, target, arch, size: stats.size },
     })
 
-    // Le panel déduit rôle et format du nom de fichier : s'il ne range pas
-    // l'artefact là où la CI croit l'envoyer, mieux vaut s'en apercevoir ici
-    // que devant une release publiée avec un moteur dans le créneau des
-    // bootstraps.
-    if (registered.format !== artifact.format || (registered.role && registered.role !== role)) {
-        fail(
-            `${filename} : le panel l'a rangé en ${registered.role ?? '?'}/${registered.format ?? '?'},` +
-                ` attendu ${role}/${artifact.format}`,
-        )
+    // Le panel déduit le format du nom de fichier : s'il ne range pas
+    // l'artefact dans le créneau où la CI croit l'envoyer, mieux vaut s'en
+    // apercevoir ici que devant une release publiée de travers.
+    if (registered.format !== artifact.format) {
+        fail(`${filename} : le panel l'a rangé en ${registered.format ?? '?'}, attendu ${artifact.format}`)
     }
 
     const { uploadId, partSize } = await callPanel(`/api/launcher/build/artifact/${registered.artifactId}/upload`)
@@ -300,15 +295,11 @@ async function uploadOne(version, artifact, { role, target, arch }) {
         body: { uploadId, parts, sha256: digest.digest('hex') },
     })
 
-    console.log(`  ✓ ${filename} — ${role}/${artifact.format}, ${(stats.size / 1024 / 1024).toFixed(1)} Mio`)
+    console.log(`  ✓ ${filename} — ${artifact.format}, ${(stats.size / 1024 / 1024).toFixed(1)} Mio`)
 }
 
 async function commandUpload() {
     const version = await readVersion()
-    const role = env('ARTIFACT_ROLE')
-    if (!Object.hasOwn(FORMATS, role)) {
-        fail(`rôle inconnu : ${role} — attendu ${Object.keys(FORMATS).join(', ')}`)
-    }
     const target = env('ARTIFACT_TARGET')
     const arch = env('ARTIFACT_ARCH')
 
@@ -322,22 +313,22 @@ async function commandUpload() {
         fail('aucun artefact produit par le build')
     }
 
-    const artifacts = await collectArtifacts(paths, role)
-    if (artifacts.length === 0) fail(`aucun artefact ${role} pour ${target}/${arch}`)
+    const artifacts = await collectArtifacts(paths)
+    if (artifacts.length === 0) fail(`aucun artefact publiable pour ${target}/${arch}`)
 
-    console.log(`${artifacts.length} artefact(s) ${role} pour ${target}/${arch} :`)
+    console.log(`${artifacts.length} artefact(s) pour ${target}/${arch} :`)
 
     // En série, volontairement : plusieurs centaines de Mio en parallèle sur un
     // runner GitHub ne gagnent rien et rendent les échecs illisibles.
     for (const artifact of artifacts) {
-        await uploadOne(version, artifact, { role, target, arch })
+        await uploadOne(version, artifact, { target, arch })
     }
 }
 
 async function commandPublish() {
     const version = await readVersion()
     await callPanel(`/api/launcher/build/release/${encodeURIComponent(version)}/publish`)
-    console.log(`release ${version} publiée : les launchers installés la verront au prochain démarrage`)
+    console.log(`release ${version} publiée : le panel la sert dès maintenant`)
 }
 
 const COMMANDS = { open: commandOpen, upload: commandUpload, publish: commandPublish }

@@ -1,8 +1,8 @@
 //! Le pack client : à quel tenant ce moteur appartient-il ?
 //!
 //! Le binaire est **générique**. Rien du tenant n'est compilé dedans, rien
-//! n'est demandé au réseau pour le découvrir : tout est posé à côté de lui, sur
-//! le disque, par le bootstrap au moment de l'installation.
+//! n'est demandé au réseau pour le découvrir : tout est attendu à côté de lui,
+//! sur le disque.
 //!
 //! ```text
 //! <racine installée>/
@@ -12,30 +12,61 @@
 //!     icon.png
 //! ```
 //!
-//! Le pack est donc cherché **relativement à l'exécutable**, jamais dans un
-//! dossier de données : c'est ce qui fait que deux clients installés côte à côte
-//! sur la même machine lisent chacun le leur, et qu'un moteur remplacé par le
-//! bootstrap retrouve son tenant sans rien réécrire — seul `engine/` change, le
-//! pack posé à côté reste en place.
+//! Cette arborescence est écrite par l'installeur : le bootstrap Windows
+//! (`bootstrap/` dans ce dépôt) ou le script `sh` que le panel sert pour Linux
+//! et macOS. Ni l'un ni l'autre ne revient ensuite — le moteur se met à jour
+//! lui-même, et ne remplace jamais que `engine/`.
+//!
+//! Le pack est cherché **relativement à l'exécutable**, jamais dans un dossier
+//! de données : c'est ce qui fait que deux clients installés côte à côte sur la
+//! même machine lisent chacun le leur, et qu'un moteur remplacé retrouve son
+//! tenant sans rien réécrire — seul `engine/` change, le pack posé à côté reste
+//! en place.
 //!
 //! Sous Linux le moteur est une AppImage : `current_exe()` y désigne le binaire
 //! *à l'intérieur* du point de montage temporaire, pas le fichier installé. Le
 //! runtime AppImage publie le vrai chemin dans `$APPIMAGE`, et c'est le seul
 //! endroit où le trouver (voir `appimage_path`).
 //!
-//! Il n'y a **aucun repli** : pas d'appairage, pas de tenant compilé, pas de
-//! copie persistée ailleurs. Un pack absent ou illisible est une erreur fatale
-//! et explicite — un moteur qui démarre sans savoir à qui il parle n'a rien à
-//! afficher, et deviner le mènerait à parler au mauvais panel.
+//! ## macOS : le pack vit hors du bundle
+//!
+//! Un `.app` est remplacé **en entier** quand le moteur se met à jour : tout ce
+//! qui serait posé dedans disparaîtrait avec lui, et y écrire casserait de
+//! toute façon sa signature. Le pack est donc rangé à côté, sous le dossier de
+//! données de l'utilisateur, dans un dossier dont le nom est l'empreinte du
+//! chemin du bundle :
+//!
+//! ```text
+//! ~/Library/Application Support/luuxcraft/installs/<clé>/client_config.json
+//! ```
+//!
+//! La clé est déterministe — le script d'installation calcule la même — donc il
+//! n'y a aucun index partagé à tenir à jour, rien à verrouiller, et deux
+//! serveurs installés côte à côte ne peuvent pas se confondre. Déplacer le
+//! `.app` change sa clé : le repli ci-dessous rattrape ce cas tant qu'une seule
+//! installation existe.
+//!
+//! Il n'y a **aucun autre repli** : pas d'appairage, pas de tenant compilé. Un
+//! pack absent ou illisible est une erreur fatale et explicite — un moteur qui
+//! démarre sans savoir à qui il parle n'a rien à afficher, et deviner le
+//! mènerait à parler au mauvais panel.
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 /// Nom du fichier d'identité dans le pack, figé par le contrat.
 pub const CLIENT_CONFIG_FILE: &str = "client_config.json";
 /// Dossier du pack client, à côté de `engine/`.
 const CLIENT_DIR: &str = "client";
+/// Dossier des identités d'installation macOS, sous le dossier de données.
+/// Doit rester identique à `MACOS_INSTALL_DIR` côté panel.
+#[cfg(target_os = "macos")]
+const MACOS_INSTALL_DIR: &str = "luuxcraft/installs";
+/// Longueur de la clé d'installation macOS, en caractères hexadécimaux.
+/// Doit rester identique à `INSTALL_KEY_LENGTH` côté panel.
+const INSTALL_KEY_LENGTH: usize = 32;
 /// Seule version du format que ce moteur sait lire.
 const SCHEMA: u32 = 1;
 /// Au-delà, ce n'est plus un fichier d'identité : on ne le charge pas.
@@ -102,7 +133,8 @@ impl ClientConfig {
         let exe = installed_exe().ok_or_else(|| {
             "cannot locate the engine executable, so the client pack cannot be found".to_owned()
         })?;
-        let candidates = pack_dir_candidates(&exe);
+        let mut candidates = pack_dir_candidates(&exe);
+        candidates.extend(external_pack_dirs(&exe));
         for dir in &candidates {
             if dir.join(CLIENT_CONFIG_FILE).is_file() {
                 return Self::read(dir);
@@ -302,14 +334,92 @@ pub fn pack_dir_candidates(exe: &Path) -> Vec<PathBuf> {
         // `<bundle>.app/Contents/MacOS/<binaire>` → `Contents/Resources/client`,
         // le seul endroit d'un bundle où poser des ressources.
         candidates.push(root.join("Resources").join(CLIENT_DIR));
-        // `<bundle>.app/client`, la disposition que le bootstrap écrit sur
-        // macOS : le pack est posé à la racine du bundle, à côté de `Contents`.
+        // `<bundle>.app/client` : le pack posé à la racine du bundle, à côté de
+        // `Contents`, plutôt qu'à l'intérieur.
         if let Some(bundle) = root.parent() {
             candidates.push(bundle.join(CLIENT_DIR));
         }
     }
     candidates.push(dir.join(CLIENT_DIR));
     candidates
+}
+
+/// Clé d'identité d'une installation macOS : l'empreinte de son chemin.
+///
+/// Déterministe et calculée des deux côtés — ici, et dans le script
+/// d'installation servi par le panel. C'est ce qui évite un index partagé, avec
+/// les entrées périmées et les écritures concurrentes qu'il traînerait.
+/// Compilée partout pour que son test de conformité au script d'installation
+/// tourne aussi sur l'intégration continue Linux ; seul macOS l'appelle.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub fn install_key(path: &Path) -> String {
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    let mut key = String::with_capacity(INSTALL_KEY_LENGTH);
+    for byte in digest.iter() {
+        if key.len() >= INSTALL_KEY_LENGTH {
+            break;
+        }
+        key.push_str(&format!("{byte:02x}"));
+    }
+    key.truncate(INSTALL_KEY_LENGTH);
+    key
+}
+
+/// Le `.app` qui contient cet exécutable, s'il y en a un.
+///
+/// `<bundle>.app/Contents/MacOS/<binaire>` remonte de trois crans. La
+/// vérification du suffixe évite de prendre n'importe quel dossier grand-parent
+/// pour un bundle quand le moteur tourne hors bundle (tests, build local).
+#[cfg(target_os = "macos")]
+fn enclosing_bundle(exe: &Path) -> Option<PathBuf> {
+    let bundle = exe.parent()?.parent()?.parent()?;
+    let looks_like_bundle = bundle
+        .extension()
+        .map(|extension| extension.eq_ignore_ascii_case("app"))
+        .unwrap_or(false);
+    looks_like_bundle.then(|| bundle.to_path_buf())
+}
+
+/// Dossiers de pack situés **hors** de l'installation.
+///
+/// Uniquement macOS : ailleurs, le pack est posé à côté de l'exécutable et rien
+/// ne le remplace (voir l'en-tête de module).
+#[cfg(target_os = "macos")]
+fn external_pack_dirs(exe: &Path) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let installs = home
+        .join("Library")
+        .join("Application Support")
+        .join(MACOS_INSTALL_DIR);
+
+    let mut candidates = Vec::new();
+    if let Some(bundle) = enclosing_bundle(exe) {
+        candidates.push(installs.join(install_key(&bundle)));
+    }
+
+    // Repli : le joueur a déplacé ou renommé le `.app`, donc sa clé a changé.
+    // Tant qu'une seule installation est enregistrée, il n'y a aucune ambiguïté
+    // sur celle à laquelle il appartient. À partir de deux, deviner reviendrait
+    // à ouvrir le launcher du mauvais serveur — mieux vaut l'erreur explicite.
+    let mut registered: Vec<PathBuf> = std::fs::read_dir(&installs)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join(CLIENT_CONFIG_FILE).is_file())
+        .collect();
+    if registered.len() == 1 {
+        candidates.push(registered.remove(0));
+    }
+
+    candidates
+}
+
+#[cfg(not(target_os = "macos"))]
+fn external_pack_dirs(_exe: &Path) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -430,7 +540,7 @@ mod tests {
         assert_eq!(candidates[0], PathBuf::from("/opt/mon-serveur/client"));
     }
 
-    /// macOS : le bootstrap génère le bundle, le pack va dans `Resources`.
+    /// macOS : dans un bundle, le pack va dans `Resources`.
     #[test]
     fn the_mac_bundle_keeps_its_pack_in_resources() {
         let candidates =
@@ -448,5 +558,27 @@ mod tests {
             pack_dir_candidates(Path::new("/launcher")),
             vec![PathBuf::from("/client")],
         );
+    }
+
+    /// La clé d'installation est le contrat entre ce moteur et le script
+    /// d'installation servi par le panel : `printf '%s' "$APP" | shasum -a 256
+    /// | cut -c1-32`. Une valeur figée ici fait échouer le test le jour où l'un
+    /// des deux changerait d'algorithme ou de longueur.
+    #[test]
+    fn the_install_key_matches_the_install_script() {
+        assert_eq!(
+            install_key(Path::new("/Users/joueur/Applications/Mon Serveur.app")),
+            "684af76fda7ae69dc815782b11099716",
+        );
+        assert_eq!(install_key(Path::new("/a")).len(), INSTALL_KEY_LENGTH);
+    }
+
+    /// Deux serveurs installés côte à côte ont deux clés : sans quoi le second
+    /// lirait l'identité du premier.
+    #[test]
+    fn two_bundles_never_share_a_key() {
+        let a = install_key(Path::new("/Users/j/Applications/Serveur A.app"));
+        let b = install_key(Path::new("/Users/j/Applications/Serveur B.app"));
+        assert_ne!(a, b);
     }
 }

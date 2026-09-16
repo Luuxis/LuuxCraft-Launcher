@@ -8,10 +8,13 @@
 //! `instances`/`game` (install and launch through `crust_core`), `java`,
 //! `settings`, `status`, `system`, `logging`.
 //!
-//! Le moteur ne se met plus à jour lui-même : c'est le bootstrap, cible du
-//! raccourci et donc exécuté à chaque lancement, qui compare le SHA-256 du
-//! moteur au manifeste et le remplace. Embarquer un updater ici ferait
-//! doublon et, sous Windows, réinstallerait hors du dossier du tenant.
+//! Le moteur se met à jour lui-même (`update`), en remplaçant uniquement son
+//! propre exécutable : le pack client et les données du tenant vivent hors de
+//! ce qui est remplacé, donc une mise à jour ne peut pas lui faire perdre le
+//! serveur auquel il appartient. `tauri-plugin-updater` n'est pas utilisé — il
+//! ne sait pas mettre à jour un exécutable portable sous Windows, et l'y
+//! remplacer par un installeur d'OS casserait l'isolation par tenant ; le
+//! raisonnement complet est en tête de `update.rs`.
 
 mod accounts;
 mod api;
@@ -33,6 +36,7 @@ mod skins;
 mod state;
 mod status;
 mod system;
+mod update;
 mod util;
 
 use tauri::{Manager, WebviewWindowBuilder};
@@ -149,6 +153,9 @@ pub fn run() {
 
             // Keeps the stored sessions valid while the launcher runs.
             sessions::spawn(app.handle().clone());
+            // Et tient le moteur à jour : le bootstrap et le script
+            // d'installation ne repassent jamais après la première fois.
+            update::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -1,7 +1,7 @@
 [package]
 name = "luuxcraft-bootstrap"
 version = "1.0.0"
-description = "Installeur figé LuuxCraft : lit l'overlay tenant, installe le moteur et le pack client, puis le lance."
+description = "Installeur Windows LuuxCraft : lit son créneau d'identité, installe le moteur et le pack client, puis le lance."
 authors = ["Luuxis"]
 edition = "2021"
 publish = false
@@ -24,14 +24,12 @@ ureq = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-uuid = "1"
 dirs = "5"
-# Les trois formats de bundle moteur sont décodés sur toutes les plateformes :
-# le format vient du manifeste, pas de l'OS, et une incohérence côté panel doit
-# produire un message clair plutôt qu'un binaire incapable de la lire.
+# Le moteur Windows voyage dans un zip contenant l'exécutable nu. C'est le seul
+# format que ce bootstrap décode : `app-tar-gz` et `appimage` appartiennent aux
+# plateformes installées par le script `sh`, et embarquer leurs décodeurs ne
+# ferait qu'alourdir un binaire que le joueur télécharge en premier.
 zip = { version = "2", default-features = false, features = ["deflate"] }
-flate2 = "1"
-tar = "0.4"
 
 [profile.release]
 codegen-units = 1
