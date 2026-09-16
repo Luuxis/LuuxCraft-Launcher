@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn merge_keeps_defaults_for_missing_keys() {
-        let config = LauncherConfig::load().unwrap();
+        let config = LauncherConfig::from_client(&crate::client_config::ClientConfig::sample());
         let defaults = Settings::from_config(&config);
         let mut merged = serde_json::to_value(&defaults).unwrap();
         merge(
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn sanitize_clamps_values() {
-        let config = LauncherConfig::load().unwrap();
+        let config = LauncherConfig::from_client(&crate::client_config::ClientConfig::sample());
         let mut settings = Settings::from_config(&config);
         settings.download_concurrency = 500;
         settings.memory = MemorySettings {
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn instance_overrides_win() {
-        let config = LauncherConfig::load().unwrap();
+        let config = LauncherConfig::from_client(&crate::client_config::ClientConfig::sample());
         let mut settings = Settings::from_config(&config);
         settings.instances.insert(
             "abc".into(),

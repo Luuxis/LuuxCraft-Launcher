@@ -95,7 +95,7 @@ mod tests {
     use super::*;
 
     fn api() -> LuuxCraftApi {
-        let config = LauncherConfig::load().expect("valid config");
+        let config = LauncherConfig::from_client(&crate::client_config::ClientConfig::sample());
         let http = crust_core::network::HttpClient::new().expect("http client");
         LuuxCraftApi::new(http.inner().clone(), &config)
     }
@@ -128,7 +128,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn unknown_user_is_not_found() {
-        let mut config = LauncherConfig::load().expect("valid config");
+        let mut config = LauncherConfig::from_client(&crate::client_config::ClientConfig::sample());
         config.user_id = "00000000-0000-0000-0000-000000000000".into();
         let http = crust_core::network::HttpClient::new().expect("http client");
         let api = LuuxCraftApi::new(http.inner().clone(), &config);

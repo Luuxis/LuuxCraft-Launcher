@@ -8,7 +8,6 @@ import { Toasts } from "../components/ui/Toasts";
 import { AccountsView } from "../features/accounts/AccountsView";
 import { LoginModal } from "../features/accounts/LoginModal";
 import { HomeView } from "../features/home/HomeView";
-import { PairingView } from "../features/provisioning/PairingView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { SkinsView } from "../features/skins/SkinsView";
 import { UpdateBanner } from "../features/updater/UpdateBanner";
@@ -34,18 +33,6 @@ export function App() {
             <Icon name="autorenew" size={16} spin /> {state.bootMessage}
           </p>
         </div>
-      </div>
-    );
-  }
-
-  // A generic build that has not been told which client of the panel it
-  // serves: nothing can be fetched, so the pairing screen replaces the whole
-  // launcher rather than sitting inside an empty one.
-  if (state.phase === "pairing") {
-    return (
-      <div className="launcher-bg h-full flex flex-col">
-        <TitleBar />
-        <PairingView />
       </div>
     );
   }

@@ -1,0 +1,41 @@
+[package]
+name = "luuxcraft-bootstrap"
+version = "1.0.0"
+description = "Installeur figé LuuxCraft : lit l'overlay tenant, installe le moteur et le pack client, puis le lance."
+authors = ["Luuxis"]
+edition = "2021"
+publish = false
+
+# Crate volontairement autonome : il n'appartient pas au workspace de
+# `src-tauri/`. Le bootstrap est compilé une fois par (OS, arch) puis figé dans
+# R2 ; il ne doit rien partager avec le moteur, ni tauri, ni webview, sinon le
+# binaire servi à chaque joueur pèserait des dizaines de méga-octets.
+[workspace]
+
+[[bin]]
+name = "luuxcraft-bootstrap"
+path = "src/main.rs"
+
+[dependencies]
+# `ureq` plutôt que `reqwest` : bloquant, sans runtime asynchrone, TLS rustls
+# embarqué avec ses propres racines — un installeur ne doit dépendre ni de
+# tokio ni du magasin de certificats du système.
+ureq = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = "1"
+dirs = "5"
+# Les trois formats de bundle moteur sont décodés sur toutes les plateformes :
+# le format vient du manifeste, pas de l'OS, et une incohérence côté panel doit
+# produire un message clair plutôt qu'un binaire incapable de la lire.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

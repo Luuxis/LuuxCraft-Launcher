@@ -62,18 +62,9 @@ export interface Toast {
 }
 
 export interface State {
-  /**
-   * `pairing` is the first launch of a generic build that has not been told
-   * which client of the panel it serves — see `provisioning.rs`. Nothing can
-   * be fetched in that state, so it is a phase of its own rather than a flag
-   * on a half-loaded launcher.
-   */
-  phase: "booting" | "pairing" | "ready" | "fatal";
+  phase: "booting" | "ready" | "fatal";
   bootMessage: string;
   fatal: AppError | null;
-  /** Rejected pairing code, shown under the field. */
-  pairingError: AppError | null;
-  pairingBusy: boolean;
   bootstrap: Bootstrap | null;
   settings: Settings | null;
   accounts: AccountSummary[];
@@ -112,8 +103,6 @@ const initialState: State = {
   phase: "booting",
   bootMessage: t("boot.starting"),
   fatal: null,
-  pairingError: null,
-  pairingBusy: false,
   bootstrap: null,
   settings: null,
   accounts: [],
@@ -135,9 +124,6 @@ type Action =
   | { type: "boot/message"; message: string }
   | { type: "boot/done"; bootstrap: Bootstrap }
   | { type: "boot/fatal"; error: AppError }
-  | { type: "boot/pairing"; bootstrap: Bootstrap }
-  | { type: "pairing/busy"; busy: boolean }
-  | { type: "pairing/error"; error: AppError | null }
   | { type: "settings"; settings: Settings }
   | { type: "accounts"; accounts: AccountSummary[] }
   | { type: "remote/loading" }
@@ -257,17 +243,6 @@ function reducer(state: State, action: Action): State {
       };
     case "boot/fatal":
       return { ...state, phase: "fatal", fatal: action.error };
-    case "boot/pairing":
-      return {
-        ...state,
-        phase: "pairing",
-        bootstrap: action.bootstrap,
-        settings: action.bootstrap.settings,
-      };
-    case "pairing/busy":
-      return { ...state, pairingBusy: action.busy, pairingError: action.busy ? null : state.pairingError };
-    case "pairing/error":
-      return { ...state, pairingError: action.error, pairingBusy: false };
     case "settings":
       return { ...state, settings: action.settings };
     case "accounts":
@@ -337,8 +312,6 @@ function reducer(state: State, action: Action): State {
 }
 
 export interface Actions {
-  /** Pairs a generic build with a client key (first launch). */
-  pairLauncher: (code: string) => Promise<void>;
   refreshRemote: (quiet?: boolean) => Promise<void>;
   refreshStatuses: () => Promise<void>;
   saveSettings: (patch: Partial<Settings> | ((current: Settings) => Settings)) => Promise<Settings | null>;
@@ -656,24 +629,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [toastError],
   );
 
-  /**
-   * Pairs the launcher with the code the player typed.
-   *
-   * The backend validates the code against the panel and restarts on success,
-   * so a resolved promise here means the window is already going away — only
-   * the rejection path has anything left to do.
-   */
-  const pairLauncher = useCallback(async (code: string) => {
-    const trimmed = code.trim();
-    if (!trimmed) return;
-    dispatch({ type: "pairing/busy", busy: true });
-    try {
-      await ipc.provisioningSet(trimmed);
-    } catch (error) {
-      dispatch({ type: "pairing/error", error: toAppError(error) });
-    }
-  }, []);
-
   // Boot sequence.
   useEffect(() => {
     let cancelled = false;
@@ -682,13 +637,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const bootstrap = await ipc.bootstrap();
         if (cancelled) return;
         applyTheme(bootstrap.settings.ui.theme, bootstrap.settings.ui.reduceMotion);
-        // An unpaired build has no panel to ask: going further would only
-        // produce a 404 and a launcher with nothing in it.
-        if (!bootstrap.provisioning.provisioned) {
-          logger.info("launcher not paired yet, showing the pairing screen");
-          dispatch({ type: "boot/pairing", bootstrap });
-          return;
-        }
         dispatch({ type: "boot/done", bootstrap });
         logger.info(`ui ready (launcher ${bootstrap.system.launcherVersion})`);
         dispatch({ type: "boot/message", message: t("boot.loadingPanel") });
@@ -744,7 +692,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo<Actions>(
     () => ({
-      pairLauncher,
       refreshRemote,
       refreshStatuses,
       saveSettings,
@@ -772,7 +719,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openFolder,
     }),
     [
-      pairLauncher,
       refreshRemote,
       refreshStatuses,
       saveSettings,

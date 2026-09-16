@@ -13,15 +13,10 @@ use crate::api::RemoteSnapshot;
 use crate::config::{LauncherConfig, Paths};
 use crate::error::{AppError, AppResult};
 use crate::game::GameManager;
-use crate::provisioning::ProvisioningSource;
 use crate::settings::Settings;
 
 pub struct AppState {
     pub config: LauncherConfig,
-    /// Where `config.user_id` came from; `None` while the launcher is not
-    /// paired to a client yet, which is what makes the UI show the pairing
-    /// screen instead of an empty launcher.
-    pub provisioning_source: Option<ProvisioningSource>,
     pub paths: Paths,
     pub http: HttpClient,
     pub settings: Mutex<Settings>,
@@ -38,11 +33,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(
-        config: LauncherConfig,
-        provisioning_source: Option<ProvisioningSource>,
-        paths: Paths,
-    ) -> Result<Self, String> {
+    pub fn new(config: LauncherConfig, paths: Paths) -> Result<Self, String> {
         paths
             .create_all()
             .map_err(|error| format!("cannot create the launcher directories: {error}"))?;
@@ -52,17 +43,10 @@ impl AppState {
         let mut settings = Settings::load(&paths.settings_file(), &config);
         settings.sanitize(&config, total_memory_mb);
 
-        let data_directory = settings
-            .resolved_data_directory
-            .clone()
-            .unwrap_or_else(|| config.data_directory.clone());
-        let game_root = paths.game_root(settings.install_path().as_deref(), &data_directory);
-        adopt_legacy_accounts(&paths, &game_root);
         let accounts = AccountStore::open(paths.launcher_dir.clone());
 
         Ok(Self {
             config,
-            provisioning_source,
             paths,
             http,
             settings: Mutex::new(settings),
@@ -92,9 +76,9 @@ impl AppState {
 
     pub fn replace_settings(&self, incoming: Settings) -> AppResult<Settings> {
         crate::settings::validate_incoming(&incoming)?;
-        // Les comptes ne suivent plus la racine du jeu : ils appartiennent au
-        // client, pas à l'installation (voir `Paths::accounts_file`). Changer
-        // de dossier d'installation ne les déplace donc plus.
+        // Les comptes ne suivent pas la racine du jeu : ils appartiennent au
+        // tenant, pas à l'installation (voir `Paths::accounts_file`). Changer
+        // de dossier d'installation ne les déplace donc pas.
         self.update_settings(|settings| *settings = incoming)
     }
 
@@ -130,38 +114,6 @@ impl AppState {
 
     pub fn take_auth_cancel(&self) -> Option<Arc<Notify>> {
         self.auth_cancel.lock().expect("auth cancel mutex").take()
-    }
-}
-
-/// Remonte `accounts.json` de la racine du jeu vers le dossier du client.
-///
-/// Les comptes y vivaient tant qu'un launcher ne servait qu'un serveur. Depuis
-/// que les données sont rangées par client, la racine du jeu est le mauvais
-/// endroit : deux serveurs peuvent la partager — c'est même souhaitable, elle
-/// pèse des gigaoctets — et ils partageraient alors les jetons de session du
-/// joueur.
-///
-/// Déplacement et non copie : laisser l'ancien fichier derrière laisserait des
-/// jetons valides dans un dossier que le launcher ne lit plus, et qu'un autre
-/// client relirait au premier lancement. Un échec est silencieux, le joueur se
-/// reconnecte.
-fn adopt_legacy_accounts(paths: &Paths, game_root: &std::path::Path) {
-    let destination = paths.accounts_file();
-    if destination.exists() {
-        return;
-    }
-    let legacy = game_root.join(crate::accounts::ACCOUNTS_FILE);
-    if !legacy.exists() {
-        return;
-    }
-    if let Some(parent) = destination.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
-    }
-    match std::fs::rename(&legacy, &destination) {
-        Ok(()) => log::info!("accounts moved to {}", destination.display()),
-        Err(error) => log::warn!("could not move {}: {error}", legacy.display()),
     }
 }
 

@@ -164,6 +164,10 @@ pub async fn auth_microsoft_window_login(
         .zoom_hotkeys_enabled(false)
         // Fresh session every time so another Microsoft account can be added.
         .incognito(true)
+        // Même profil que la fenêtre principale : WebView2 refuse deux dossiers
+        // de données utilisateur différents dans un même processus, et la
+        // fenêtre principale en pose déjà un, scopé au tenant.
+        .data_directory(state.paths.webview_dir.clone())
         .on_navigation(move |url| {
             if url.as_str().starts_with(&redirect_prefix) {
                 let _ = navigation_sender.send(Some(url.to_string()));
@@ -457,7 +461,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn device_code_request_with_each_client_id() {
-        let config = crate::config::LauncherConfig::load().expect("config");
+        let config = crate::config::LauncherConfig::from_client(&crate::client_config::ClientConfig::sample());
         let http = crust_core::network::HttpClient::new().expect("http");
         let api = crate::api::LuuxCraftApi::new(http.inner().clone(), &config);
         let remote = api.config().await.expect("panel config");

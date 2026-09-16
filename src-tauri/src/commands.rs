@@ -6,7 +6,6 @@ use tauri::{AppHandle, State};
 use crate::accounts::AccountSummary;
 use crate::config::LauncherConfig;
 use crate::error::AppResult;
-use crate::provisioning::{self, ProvisioningStatus};
 use crate::settings::Settings;
 use crate::state::AppState;
 use crate::system::{self, SystemInfo};
@@ -20,10 +19,6 @@ pub struct Bootstrap {
     pub accounts: Vec<AccountSummary>,
     pub system: SystemInfo,
     pub paths: BootstrapPaths,
-    /// Travels with the bootstrap so the first paint already knows whether to
-    /// draw the launcher or the pairing screen; asking in a second round trip
-    /// would flash an empty launcher first.
-    pub provisioning: ProvisioningStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,7 +41,6 @@ pub fn app_bootstrap(app: AppHandle, state: State<'_, AppState>) -> Bootstrap {
             logs_dir: state.paths.logs_dir.display().to_string(),
             game_root: state.game_root().display().to_string(),
         },
-        provisioning: provisioning::provisioning_status(state),
     }
 }
 

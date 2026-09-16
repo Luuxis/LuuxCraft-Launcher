@@ -1,9 +1,9 @@
 //! LuuxCraft launcher backend.
 //!
-//! Responsibilities are split by module: `config` (central configuration),
-//! `provisioning` (which client of the panel this launcher serves),
-//! `branding` (the client's name and logo, applied at runtime),
-//! `api` (panel client and models), `accounts`/`auth`/`sessions`
+//! Responsibilities are split by module: `client_config` (which tenant this
+//! engine serves, read from the pack on disk), `config` (central configuration
+//! and per-tenant paths), `branding` (the tenant's name and logo, applied to
+//! the window), `api` (panel client and models), `accounts`/`auth`/`sessions`
 //! (multi-account, sign-in flows and automatic renewal), `skins`,
 //! `instances`/`game` (install and launch through `crust_core`), `java`,
 //! `settings`, `status`, `updater`, `system`, `logging`.
@@ -12,6 +12,7 @@ mod accounts;
 mod api;
 mod auth;
 mod branding;
+mod client_config;
 mod commands;
 mod config;
 #[cfg(target_os = "linux")]
@@ -21,7 +22,6 @@ mod game;
 mod instances;
 mod java;
 mod logging;
-mod provisioning;
 mod sessions;
 mod settings;
 mod skins;
@@ -31,9 +31,10 @@ mod system;
 mod updater;
 mod util;
 
-use tauri::Manager;
+use tauri::{Manager, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
 
+use crate::client_config::ClientConfig;
 use crate::config::{LauncherConfig, Paths};
 use crate::state::AppState;
 
@@ -45,15 +46,41 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Meurt en disant pourquoi.
+///
+/// Un moteur qui ne sait pas à quel tenant il appartient n'a rien à afficher et
+/// personne à qui parler : il n'y a ni appairage ni valeur compilée pour le
+/// rattraper, donc rien à faire d'autre que de s'arrêter net.
+fn fail(reason: &str) -> ! {
+    eprintln!("luuxcraft-launcher: {reason}");
+    std::process::exit(1);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let config = match LauncherConfig::load() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
+    // Le pack client d'abord : c'est lui qui donne le slug, et le slug décide
+    // de tout ce qui doit être isolé entre deux tenants — jusqu'à
+    // l'identifiant de l'application, qu'il faut avoir figé avant de construire
+    // quoi que ce soit.
+    let client = match ClientConfig::resolve() {
+        Ok(client) => client,
+        Err(error) => fail(&error),
     };
+    let config = LauncherConfig::from_client(&client);
+
+    // Deux clients du même moteur doivent pouvoir tourner en même temps. Or
+    // l'identifiant du bundle est ce qui sert de clé au verrou d'instance
+    // unique (mutex Windows, nom D-Bus Linux, socket macOS) comme au dossier de
+    // configuration dont le greffon d'état de fenêtre tire son fichier : le
+    // laisser commun, c'est faire croire à tauri que le tenant B *est* le
+    // tenant A. On le suffixe donc du slug, une fois, avant tout le reste.
+    let mut context = tauri::generate_context!();
+    let identifier = format!(
+        "{}.{}",
+        context.config().identifier.trim_end_matches('.'),
+        client.slug
+    );
+    context.config_mut().identifier = identifier;
 
     tauri::Builder::default()
         // Must be the first plugin: a second launch focuses the running one.
@@ -70,52 +97,10 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            let shared_paths = Paths::resolve(app.handle())?;
-            shared_paths.create_all()?;
-
-            // Which client of the panel does this binary serve? One launcher
-            // is built for everyone, so the answer is not compiled in: it is
-            // appended to the installer at download time and read back here.
-            // Not finding it is a normal state — the UI asks for a pairing
-            // code — so it must never abort the startup.
-            //
-            // Résolu avant d'ouvrir le journal parce que la réponse décide
-            // *où* il s'ouvre : les données sont rangées par client, et la
-            // migration de l'installation héritée déplace des fichiers, ce que
-            // Windows refuse de faire sur un fichier déjà ouvert.
-            let mut config = config.clone();
-            let resolved = provisioning::resolve(&shared_paths.shared_dir);
-            let block_brand = resolved.as_ref().and_then(|found| found.brand.clone());
-            let provisioning_source = match &resolved {
-                Some(found) => {
-                    config.apply_provisioning(&found.provisioning);
-                    Some(found.source)
-                }
-                None if config.is_provisioned() => Some(provisioning::ProvisioningSource::BuiltIn),
-                None => None,
-            };
-
-            let paths = if config.is_provisioned() {
-                shared_paths.scoped_to(&config.user_id)
-            } else {
-                shared_paths
-            };
+            let paths = Paths::resolve(app.handle(), &client)?;
             paths.create_all()?;
             app.handle()
                 .plugin(logging::plugin(paths.logs_dir.clone()))?;
-
-            match (&resolved, provisioning_source) {
-                (Some(found), _) => log::info!(
-                    "provisioned from {:?}: {} ({})",
-                    found.source,
-                    found.provisioning.key,
-                    found.provisioning.api_url
-                ),
-                (None, Some(_)) => log::info!("provisioned at build time: {}", config.user_id),
-                (None, None) => {
-                    log::warn!("launcher not paired to a client yet, asking for a pairing code")
-                }
-            }
 
             let package = app.package_info();
             log::info!(
@@ -126,38 +111,41 @@ pub fn run() {
                 std::env::consts::ARCH,
                 "1.0.3"
             );
-            log::info!("launcher data: {}", paths.launcher_dir.display());
-            let state = AppState::new(config, provisioning_source, paths)?;
-            log::info!("game root: {}", state.game_root().display());
-            let paired = state.config.is_provisioned();
-
-            // Nom et logo du client d'après le dernier snapshot connu : la
-            // fenêtre s'ouvre déjà à la bonne identité, sans attendre le panel.
-            // Elle sera rafraîchie à la première réponse de `/config`.
-            //
-            // Au tout premier démarrage il n'y a pas encore de snapshot : le
-            // nom lu dans le bloc de l'installeur prend alors le relais, ce qui
-            // fait qu'une première ouverture hors ligne porte quand même le nom
-            // du serveur. Le snapshot reste prioritaire — il est plus récent.
-            let cached = state.cached_snapshot();
-            let cached_name = cached
-                .as_ref()
-                .and_then(|snapshot| snapshot.config.brand.as_ref())
-                .and_then(|brand| brand.name.clone())
-                .or_else(|| block_brand.as_ref().map(|brand| brand.name.clone()));
-            branding::apply_cached(
-                app.handle(),
-                cached_name.as_deref(),
-                &state.paths.launcher_dir,
-                &state.config.user_id,
+            log::info!(
+                "client pack: {} ({}, {})",
+                client.dir.display(),
+                client.slug,
+                client.api_base_url
             );
+            log::info!("launcher data: {}", paths.launcher_dir.display());
 
+            // La fenêtre est déclarée `create: false` : c'est la seule façon de
+            // lui donner un profil de webview à part, sans quoi WebView2 et
+            // WebKitGTK rangent cookies et `localStorage` de tous les tenants
+            // au même endroit.
+            let window_config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .expect("the main window must be declared in tauri.conf.json");
+            let window = WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+                .data_directory(paths.webview_dir.clone())
+                .build()?;
+
+            // Déclarée invisible : le titre et l'icône sont posés avant la
+            // première image, pour que le nom générique du moteur ne
+            // s'affiche jamais, pas même le temps d'une trame.
+            branding::apply(&window, &client, &paths.launcher_dir);
+            window.show()?;
+
+            let state = AppState::new(config, paths)?;
+            log::info!("game root: {}", state.game_root().display());
             app.manage(state);
-            // Nothing to renew before the launcher knows which panel to ask.
-            if paired {
-                // Keeps the stored sessions valid while the launcher runs.
-                sessions::spawn(app.handle().clone());
-            }
+
+            // Keeps the stored sessions valid while the launcher runs.
+            sessions::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -166,9 +154,6 @@ pub fn run() {
             commands::settings_update,
             commands::settings_reset,
             commands::game_root,
-            provisioning::provisioning_status,
-            provisioning::provisioning_set,
-            provisioning::provisioning_forget,
             api::remote_fetch,
             api::remote_articles,
             api::remote_cached,
@@ -211,7 +196,7 @@ pub fn run() {
             system::open_folder,
             system::open_external,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the tauri application")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {

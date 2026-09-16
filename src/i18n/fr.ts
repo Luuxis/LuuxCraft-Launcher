@@ -64,32 +64,6 @@ export const fr = {
     maintenanceTitle: "Maintenance en cours",
     partialTitle: "Certaines données n'ont pas pu être chargées",
   },
-  pairing: {
-    title: "Connectez votre serveur",
-    intro:
-      "Ce launcher n'est lié à aucun serveur. Saisissez le code fourni par votre serveur pour le configurer : c'est à faire une seule fois.",
-    codeLabel: "Code du serveur",
-    codeHint:
-      "Le code figure sur la page de téléchargement de votre serveur. Les installeurs Windows et Linux le contiennent déjà : cet écran ne s'affiche que si le vôtre ne l'avait pas.",
-    codePlaceholder: "abc-def-ghi",
-    submit: "Connecter le launcher",
-    panel: "Panel : {panel}",
-    codeField: "Code du serveur",
-    panelField: "Panel",
-    sourceField: "Origine de la configuration",
-    source: {
-      executable: "Lue dans le fichier téléchargé",
-      installer: "Récupérée par l'installeur",
-      persisted: "Enregistrée sur cet ordinateur",
-      builtIn: "Intégrée à la compilation",
-    },
-    change: "Changer de serveur",
-    changeHint:
-      "Le launcher redémarre et vous demande un nouveau code. Vos comptes et vos fichiers de jeu ne sont pas touchés.",
-    changeConfirmTitle: "Changer de serveur ?",
-    changeConfirmMessage:
-      "Le launcher va oublier ce serveur et redémarrer pour vous demander un nouveau code. Vos comptes et vos fichiers de jeu restent en place.",
-  },
   home: {
     greeting: "Bonjour",
     greetingGuest: "Bienvenue",
@@ -314,6 +288,13 @@ export const fr = {
       useDefault: "Revenir au dossier par défaut",
       changeWarning: "Les fichiers déjà installés ne sont pas déplacés : ils seront retéléchargés dans le nouveau dossier.",
     },
+    server: {
+      name: "Serveur",
+      slug: "Dossier",
+      tenant: "Identifiant",
+      panel: "Panel",
+      hint: "Ce launcher a été installé pour ce serveur. Pour en rejoindre un autre, téléchargez son installeur : les deux peuvent cohabiter sur cet ordinateur.",
+    },
     interface: {
       theme: "Thème",
       themes: { dark: "Sombre", light: "Clair", system: "Système" },
@@ -370,8 +351,6 @@ export const fr = {
   },
   errors: {
     title: "Une erreur est survenue",
-    provisioning_invalid: "Ce code de serveur n'est pas valide. Vérifiez la saisie (lettres, chiffres et tirets).",
-    provisioning_write: "Impossible d'enregistrer le serveur sur cet ordinateur : {message}",
     network: "Impossible de joindre le serveur. Vérifiez votre connexion Internet.",
     timeout: "Le serveur met trop de temps à répondre. Réessayez dans un instant.",
     api_invalid: "Le panel a renvoyé une réponse invalide.",

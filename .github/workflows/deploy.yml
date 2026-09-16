@@ -1,9 +1,16 @@
 name: 'publish'
 
-# Un seul launcher est compilé pour tous les clients. Ce workflow publie donc
-# UNE release globale vers le panel, qui :
-#   - sert les artefacts de mise à jour intacts à `tauri-plugin-updater` ;
-#   - ajoute la configuration de chaque client à l'installeur au téléchargement.
+# Une release du launcher porte deux lignes de produit, et rien d'autre :
+#
+#   bootstrap  l'installeur figé (`bootstrap-installer/`), un binaire par OS.
+#              C'est le seul fichier qu'un joueur télécharge. Il ne contient
+#              aucune identité : le panel lui ajoute 32 octets au téléchargement
+#              pour lui dire de quel tenant il s'agit.
+#   engine     le moteur tauri générique, publié **uniquement** en paquet de
+#              mise à jour (nsis-zip / app-tar-gz / appimage). Il n'est jamais
+#              installé par un installeur d'OS — c'est le bootstrap qui le pose,
+#              et l'updater qui le remplace. D'où l'absence de msi, dmg, deb et
+#              rpm : personne n'a plus de raison de les produire.
 #
 # Rien n'est compilé par client, et aucune release GitHub n'est créée : les
 # octets vivent dans le R2 du panel, qui les sert.
@@ -14,10 +21,11 @@ name: 'publish'
 #              TAURI_SIGNING_PRIVATE_KEY          contenu de ~/.tauri/luuxcraft-launcher.key
 #              TAURI_SIGNING_PRIVATE_KEY_PASSWORD vide si la clé n'en a pas
 #
-# Sans la clé de signature, les artefacts de mise à jour partent sans signature
-# et le panel refuse de publier la release — c'est voulu : une signature
+# Sans la clé de signature, les paquets du moteur partent sans signature et la
+# CI s'arrête avant même de les téléverser — c'est voulu : une signature
 # manquante ne se verrait sinon qu'au moment où un joueur tente la mise à jour,
-# après avoir téléchargé le paquet en entier.
+# après avoir téléchargé le paquet en entier. Les bootstraps, eux, ne sont pas
+# des artefacts d'updater et n'ont pas de signature.
 
 on:
   workflow_dispatch:
@@ -54,8 +62,8 @@ env:
   PANEL_BUILD_KEY: ${{ secrets.PANEL_BUILD_KEY }}
 
 jobs:
-  # La release doit exister avant que les jobs de la matrice n'y rattachent
-  # leurs artefacts.
+  # La release doit exister avant que les jobs de build n'y rattachent leurs
+  # artefacts.
   open-release:
     runs-on: ubuntu-latest
     outputs:
@@ -76,7 +84,95 @@ jobs:
           node .github/scripts/panel-release.mjs open
           echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
-  build:
+  # L'installeur figé : un binaire par OS, sans interface ni webview, donc sans
+  # les dépendances système du moteur.
+  bootstrap:
+    needs: open-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+            target: 'windows'
+            arch: 'x86_64'
+            triples: 'host'
+            artifact: 'bootstrap-windows-x86_64.exe'
+          - platform: 'ubuntu-latest'
+            target: 'linux'
+            arch: 'x86_64'
+            triples: 'host'
+            artifact: 'bootstrap-linux-x86_64.bin'
+          # La route de téléchargement ne connaît que l'OS, jamais
+          # l'architecture : un Mac Intel et un Mac Apple Silicon reçoivent le
+          # même fichier, qui doit donc être universel.
+          - platform: 'macos-latest'
+            target: 'darwin'
+            arch: 'universal'
+            triples: 'x86_64-apple-darwin aarch64-apple-darwin'
+            artifact: 'bootstrap-darwin-universal.bin'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      # Aucune dépendance système à installer : le bootstrap n'embarque ni
+      # webview ni TLS système (rustls), c'est tout l'intérêt d'un crate séparé.
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'darwin' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './bootstrap-installer -> target'
+          key: bootstrap-${{ matrix.target }}
+
+      - name: build the bootstrap
+        shell: bash
+        env:
+          TRIPLES: ${{ matrix.triples }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          exes=()
+          for triple in $TRIPLES; do
+            args=(build --release --manifest-path bootstrap-installer/Cargo.toml --message-format json-render-diagnostics)
+            if [ "$triple" != host ]; then args+=(--target "$triple"); fi
+            cargo "${args[@]}" > "cargo-$triple.json"
+            # Le chemin du binaire est lu dans les messages de cargo plutôt que
+            # deviné : le nom du paquet, celui de la cible et le triplet
+            # n'appartiennent pas à ce workflow.
+            exe=$(node -e 'const lines=require("node:fs").readFileSync(process.argv[1],"utf8").split(/\r?\n/).filter(Boolean);const hit=lines.map(l=>JSON.parse(l)).filter(m=>m.reason==="compiler-artifact"&&m.executable).pop();if(!hit){console.error("aucun executable produit par cargo");process.exit(1)}process.stdout.write(hit.executable)' "cargo-$triple.json")
+            # Sous Windows cargo renvoie un chemin à antislashs, que les outils
+            # MSYS de `shell: bash` ne suivent pas.
+            exes+=("${exe//\\//}")
+          done
+          if [ "${#exes[@]}" -gt 1 ]; then
+            lipo -create -output "dist/$ARTIFACT" "${exes[@]}"
+          else
+            cp "${exes[0]}" "dist/$ARTIFACT"
+          fi
+          ls -l "dist/$ARTIFACT"
+
+      - name: upload the bootstrap to the panel
+        shell: bash
+        env:
+          ARTIFACT_PATHS: '["dist/${{ matrix.artifact }}"]'
+          ARTIFACT_ROLE: 'bootstrap'
+          ARTIFACT_TARGET: ${{ matrix.target }}
+          ARTIFACT_ARCH: ${{ matrix.arch }}
+        run: node .github/scripts/panel-release.mjs upload
+
+  # Le moteur générique. Les installeurs d'OS que `tauri build` produit au
+  # passage (le `-setup.exe` NSIS) restent sur le runner : le script de
+  # téléversement n'accepte que les formats de mise à jour.
+  engine:
     needs: open-release
     strategy:
       # Sans fail-fast, une plateforme qui casse laisse les autres finir : la
@@ -88,19 +184,19 @@ jobs:
           # substitue dans `{{target}}` et `{{arch}}` : le panel les range
           # telles quelles pour que le manifeste de mise à jour tombe pile.
           - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
+            args: '--target aarch64-apple-darwin --bundles app'
             target: 'darwin'
             arch: 'aarch64'
           - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
+            args: '--target x86_64-apple-darwin --bundles app'
             target: 'darwin'
             arch: 'x86_64'
           - platform: 'ubuntu-latest'
-            args: ''
+            args: '--bundles appimage'
             target: 'linux'
             arch: 'x86_64'
           - platform: 'windows-latest'
-            args: ''
+            args: '--bundles nsis'
             target: 'windows'
             arch: 'x86_64'
 
@@ -131,12 +227,12 @@ jobs:
           workspaces: './src-tauri -> target'
           # Deux jobs macOS partagent le runner mais pas la cible : sans clé
           # distincte, ils s'écrasent mutuellement le cache.
-          key: ${{ matrix.target }}-${{ matrix.arch }}
+          key: engine-${{ matrix.target }}-${{ matrix.arch }}
 
       - name: install frontend dependencies
         run: npm install
 
-      - name: build the launcher
+      - name: build the engine
         id: build
         uses: tauri-apps/tauri-action@v1
         env:
@@ -147,22 +243,22 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
-      - name: upload the artifacts to the panel
+      - name: upload the update bundle to the panel
         shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.build.outputs.artifactPaths }}
+          ARTIFACT_ROLE: 'engine'
           ARTIFACT_TARGET: ${{ matrix.target }}
           ARTIFACT_ARCH: ${{ matrix.arch }}
         run: node .github/scripts/panel-release.mjs upload
 
-  # C'est `needs` qui donne le « tout ou rien » par plateforme : un job de build
-  # en échec fait échouer `build`, et rien n'est publié. Le panel, lui, refuse en
-  # plus un artefact dont les octets manquent ou un artefact de mise à jour sans
-  # signature.
+  # C'est `needs` qui donne le « tout ou rien » : un seul job de build en échec
+  # ne publie rien. Le panel, lui, refuse en plus un artefact dont les octets
+  # manquent ou un paquet de mise à jour sans signature.
   publish-release:
     # `open-release` est dans les besoins pour son `outputs.version`, repris
     # dans le résumé.
-    needs: [open-release, build]
+    needs: [open-release, bootstrap, engine]
     # Un push de tag publie toujours. Le test ne peut pas s'écrire
     # `inputs.publish != false` : hors `workflow_dispatch` l'entrée est nulle,
     # et GitHub convertit `null` et `false` en 0 — la comparaison serait fausse
@@ -186,7 +282,8 @@ jobs:
             echo
             echo "Canal : \`${{ inputs.channel || 'stable' }}\`"
             echo
-            echo "Les launchers installés verront la mise à jour à leur prochain démarrage."
-            echo "Les nouveaux téléchargements passent par \`/api/launcher/download/<code client>/<plateforme>\`,"
-            echo "qui ajoute la configuration du client à l'installeur."
+            echo "Les launchers installés verront la mise à jour du moteur à leur prochain démarrage."
+            echo "Les nouveaux téléchargements passent par"
+            echo "\`/api/v1/launchers/<id du tenant>/download?os=windows|linux|macos\`,"
+            echo "qui sert le bootstrap figé avec l'overlay du tenant."
           } >> "$GITHUB_STEP_SUMMARY"

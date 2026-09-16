@@ -1,10 +1,10 @@
 //! Multi-account store.
 //!
 //! Accounts (with their `crust_core::authenticator::Account`, tokens included)
-//! live in one JSON file in the client's own launcher directory (see
-//! `config::Paths::accounts_file`). They used to sit at the game root; they
-//! follow the client instead, because two servers may legitimately share a
-//! game root — it weighs gigabytes — but never the player's sessions.
+//! live in one JSON file under the tenant's own data root (see
+//! `config::Paths::accounts_file`). Ils suivent le tenant et non l'installation
+//! du jeu : deux serveurs peuvent légitimement partager une racine de jeu —
+//! elle pèse des gigaoctets — mais sûrement pas les sessions du joueur.
 //! The file is written atomically and readable by the user only. Encryption
 //! at rest is planned on top of this format; the structure is versioned for it.
 //! Nothing sensitive ever reaches the webview: commands only return
@@ -152,8 +152,8 @@ struct AccountsFile {
 }
 
 pub struct AccountStore {
-    /// Fixe pour la durée de l'exécution : le fichier appartient au client, que
-    /// rien ne change sans redémarrer (voir `provisioning::provisioning_set`).
+    /// Fixe pour la durée de l'exécution : le fichier appartient au tenant, que
+    /// seul un autre pack client — donc une autre installation — peut changer.
     path: PathBuf,
     accounts: Mutex<Vec<StoredAccount>>,
 }
@@ -348,8 +348,8 @@ mod tests {
         assert!(account["addedAt"].is_number());
     }
 
-    /// Deux clients ne partagent pas leurs sessions : chacun ouvre son propre
-    /// fichier, dans son propre dossier (voir `config::Paths`).
+    /// Deux tenants ne partagent pas leurs sessions : chacun ouvre son propre
+    /// fichier, dans sa propre racine de données (voir `config::Paths`).
     #[test]
     fn two_clients_keep_separate_accounts() {
         let first = temp_dir("client-one");

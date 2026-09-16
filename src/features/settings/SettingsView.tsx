@@ -78,14 +78,12 @@ function Section({ id, icon, title, children, tone }: { id: string; icon: string
 
 export function SettingsView() {
   const { bootstrap, update: updateCheckResult, updateInstalling, updateProgress } = useAppState();
-  const { resetSettings, openFolder, checkUpdate, installUpdate, openExternal, toast } = useActions();
+  const { resetSettings, openFolder, checkUpdate, installUpdate, openExternal } = useActions();
   const { selected } = useInstances();
   const { draft, update, saving } = useSettingsEditor();
   const brand = useBrand();
   const updaterConfigured = useUpdaterConfigured();
-  const provisioning = bootstrap?.provisioning;
   const [confirmReset, setConfirmReset] = useState(false);
-  const [changeServer, setChangeServer] = useState(false);
   const [gameRoot, setGameRoot] = useState(bootstrap?.paths.gameRoot ?? "");
 
   const [javas, setJavas] = useState<JavaInstall[] | null>(null);
@@ -422,20 +420,14 @@ export function SettingsView() {
           <Notice tone="warning">{t("settings.install.changeWarning")}</Notice>
         </Section>
 
-        {/* Serveur : à quel client du panel ce launcher est appairé */}
-        {provisioning ? (
-          <Section id="server" icon="dns" title={t("settings.sections.server")}>
-            <KeyValue label={t("pairing.codeField")} value={provisioning.key ?? t("common.none")} mono />
-            <KeyValue label={t("pairing.panelField")} value={provisioning.apiUrl} mono />
-            {provisioning.source ? (
-              <KeyValue label={t("pairing.sourceField")} value={t(`pairing.source.${provisioning.source}`)} />
-            ) : null}
-            <Button variant="secondary" icon="swap_horiz" onClick={() => setChangeServer(true)}>
-              {t("pairing.change")}
-            </Button>
-            <Notice tone="warning">{t("pairing.changeHint")}</Notice>
-          </Section>
-        ) : null}
+        {/* Serveur : le tenant que le pack client a figé à l'installation */}
+        <Section id="server" icon="dns" title={t("settings.sections.server")}>
+          <KeyValue label={t("settings.server.name")} value={bootstrap.config.displayName} />
+          <KeyValue label={t("settings.server.slug")} value={bootstrap.config.slug} mono />
+          <KeyValue label={t("settings.server.tenant")} value={bootstrap.config.userId} mono />
+          <KeyValue label={t("settings.server.panel")} value={bootstrap.config.api.baseUrl} mono />
+          <Notice tone="info">{t("settings.server.hint")}</Notice>
+        </Section>
 
         {/* Interface */}
         <Section id="interface" icon="palette" title={t("settings.sections.interface")} tone="pink">
@@ -527,8 +519,6 @@ export function SettingsView() {
             <KeyValue label={t("settings.about.version")} value={bootstrap.system.launcherVersion} mono />
             <KeyValue label={t("settings.about.engine")} value="crust_core 1.0.3" mono />
             <KeyValue label={t("settings.about.platform")} value={`${bootstrap.system.platform} · ${bootstrap.system.arch}`} mono />
-            <KeyValue label={t("settings.about.panel")} value={bootstrap.config.api.baseUrl.replace(/^https?:\/\//, "")} mono />
-            <KeyValue label="Launcher" value={bootstrap.config.userId} mono />
             <KeyValue label={t("settings.about.storage")} value={<span className="selectable">{bootstrap.system.accountsFile}</span>} mono />
           </div>
           {brand.website ? (
@@ -549,25 +539,6 @@ export function SettingsView() {
         onConfirm={async () => {
           await resetSettings();
           setConfirmReset(false);
-        }}
-      />
-
-      {/* Oublier le serveur redémarre le launcher : la confirmation n'a rien à
-          rouvrir derrière elle. */}
-      <ConfirmDialog
-        open={changeServer}
-        title={t("pairing.changeConfirmTitle")}
-        message={t("pairing.changeConfirmMessage")}
-        confirmLabel={t("pairing.change")}
-        danger
-        onCancel={() => setChangeServer(false)}
-        onConfirm={async () => {
-          try {
-            await ipc.provisioningForget();
-          } catch (cause) {
-            setChangeServer(false);
-            toast("error", t("errors.title"), describeError(toAppError(cause)));
-          }
         }}
       />
     </div>

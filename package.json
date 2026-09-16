@@ -4,7 +4,6 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "LUUXCRAFT_USER_ID=bb8f5247-1d38-41bb-ab6d-3200471a06b2 tauri dev",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

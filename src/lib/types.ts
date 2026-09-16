@@ -8,7 +8,11 @@
  * instead; this only carries what the API cannot provide about itself.
  */
 export interface LauncherConfig {
+  /** `users.id` du tenant, tel que le pack client l'a figé. */
   userId: string;
+  /** Slug du tenant : nom de son dossier de données. */
+  slug: string;
+  displayName: string;
   api: { baseUrl: string; timeoutSeconds: number };
   dataDirectory: string;
   updater: { endpoints: string[] };
@@ -272,26 +276,12 @@ export interface SystemInfo {
   debug: boolean;
 }
 
-/** Where the launcher found out which client of the panel it serves. */
-export type ProvisioningSource = "executable" | "installer" | "persisted" | "builtIn";
-
-export interface ProvisioningStatus {
-  /** `false` on a generic build that has not been paired yet. */
-  provisioned: boolean;
-  source: ProvisioningSource | null;
-  /** Panel the launcher talks to, without the client key. */
-  apiUrl: string;
-  /** Client key, so the player can read it back from the settings. */
-  key: string | null;
-}
-
 export interface Bootstrap {
   config: LauncherConfig;
   settings: Settings;
   accounts: AccountSummary[];
   system: SystemInfo;
   paths: { launcherDir: string; logsDir: string; gameRoot: string };
-  provisioning: ProvisioningStatus;
 }
 
 export interface SkinData {

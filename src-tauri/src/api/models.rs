@@ -21,9 +21,9 @@ pub struct RemoteConfig {
     pub links: Vec<Link>,
     /// Module toggles published by the panel (`modules`, `features`).
     pub modules: Map<String, Value>,
-    /// Launcher identity published by the panel. Anything missing falls back
-    /// to the built-in brand, which is what the title bar paints before the
-    /// first request completes.
+    /// Identité affichée *dans* l'interface (wordmark, sous-titre, site). Le
+    /// titre et l'icône de la fenêtre, eux, viennent du pack client local et
+    /// n'attendent rien du panel (voir `branding`).
     pub brand: Option<RemoteBrand>,
     /// Tauri updater endpoints published by the panel; they take precedence
     /// over the built-in ones so a release can be pointed elsewhere.
@@ -45,9 +45,9 @@ pub struct RemoteBrand {
     pub suffix: Option<String>,
     pub subtitle: Option<String>,
     pub website: Option<String>,
-    /// Logo du client. Le launcher en fait l'icône de sa fenêtre et de la barre
-    /// des tâches à chaud — c'est ce qui donne le bon logo sans compiler un
-    /// launcher par client.
+    /// Logo affiché dans la barre de titre de l'interface. L'icône de la
+    /// fenêtre côté système, elle, est celle du pack client : elle doit être
+    /// posée avant la première image, donc avant tout appel au panel.
     pub icon_url: Option<String>,
 }
 

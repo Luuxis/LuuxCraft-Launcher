@@ -20,7 +20,6 @@ import type {
   JavaRequirement,
   LaunchEvent,
   LibrarySkin,
-  ProvisioningStatus,
   RemoteSnapshot,
   RunningGame,
   ServerStatus,
@@ -70,17 +69,6 @@ export const ipc = {
   gameRoot: () => call<string>("game_root"),
   openFolder: (target: string) => call<void>("open_folder", { target }),
   openExternal: (url: string) => call<void>("open_external", { url }),
-
-  // ── Provisioning (which client of the panel this launcher serves)
-  provisioningStatus: () => call<ProvisioningStatus>("provisioning_status"),
-  /**
-   * Pairs the launcher with a client key. The backend checks the code against
-   * the panel before saving it, then restarts the launcher — so this call
-   * either throws or never returns.
-   */
-  provisioningSet: (code: string) => call<void>("provisioning_set", { code }),
-  /** Forgets the pairing and restarts on the pairing screen. */
-  provisioningForget: () => call<void>("provisioning_forget"),
 
   // ── Settings
   settingsGet: () => call<Settings>("settings_get"),

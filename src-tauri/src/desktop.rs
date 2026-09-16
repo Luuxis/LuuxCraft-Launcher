@@ -1,12 +1,11 @@
 //! Intégration au bureau Linux (standard XDG).
 //!
-//! Sous Windows et macOS, l'identité du client est portée par le conteneur :
-//! l'installeur NSIS écrit un raccourci et une entrée de désinstallation, le
-//! bundle `.app` porte son `Info.plist` et son `.icns`. Une AppImage, elle,
-//! n'est qu'un fichier exécutable : le bureau ne sait rien d'elle tant que
-//! personne ne le lui a dit. Sans ce module, le joueur n'a ni entrée dans son
-//! menu d'applications, ni icône dans son dock — juste un fichier dans
-//! `Téléchargements` à double-cliquer.
+//! Sous Windows et macOS, l'identité du tenant est portée par le conteneur : le
+//! bootstrap écrit un raccourci et une entrée de désinstallation, le bundle
+//! `.app` porte son `Info.plist` et son `.icns`. Une AppImage, elle, n'est
+//! qu'un fichier exécutable : le bureau ne sait rien d'elle tant que personne
+//! ne le lui a dit. Sans ce module, le joueur n'a ni entrée dans son menu
+//! d'applications, ni icône dans son dock — juste un fichier à double-cliquer.
 //!
 //! Ce qui est écrit, aux emplacements que la spécification XDG réserve à
 //! l'utilisateur (donc sans `sudo`, et sans toucher à ce qui est installé
@@ -17,26 +16,18 @@
 //! ~/.local/share/icons/hicolor/<taille>/apps/<app_id>.png
 //! ```
 //!
-//! ### Pourquoi une entrée par client
+//! ### Pourquoi une entrée par tenant
 //!
-//! Un seul launcher est compilé pour tous les clients du panel, et deux
-//! AppImages de serveurs différents peuvent cohabiter. `app_id` porte donc la
-//! clé du client (`fr.luuxis.luuxcraft-launcher.<clé>`) : sans elle, la
-//! seconde installation écraserait l'entrée de la première, et le joueur se
-//! retrouverait avec un seul raccourci pour deux serveurs.
+//! Un seul moteur est compilé pour tous les tenants, et deux AppImages de
+//! serveurs différents peuvent cohabiter. `app_id` est l'identifiant de
+//! l'application, que `lib::run` suffixe du slug du tenant avant de construire
+//! l'application : sans ça, la seconde installation écraserait l'entrée de la
+//! première, et le joueur se retrouverait avec un seul raccourci pour deux
+//! serveurs.
 //!
 //! Le prix à payer est que le nom de l'entrée ne coïncide plus avec la classe
 //! de fenêtre, que GNOME utilise pour relier une fenêtre ouverte à son icône.
 //! C'est exactement ce à quoi sert `StartupWMClass`, qu'on renseigne donc.
-//!
-//! ### Pourquoi seulement l'AppImage
-//!
-//! Les paquets `.deb` et `.rpm` produits par tauri installent déjà leur propre
-//! entrée dans `/usr/share/applications`. En écrire une seconde ici n'ajouterait
-//! rien d'autre qu'un doublon dans le menu — et on ne peut de toute façon pas
-//! corriger la leur sans les droits d'écriture sur `/usr`. Ces deux formats ne
-//! peuvent pas porter le bloc de provisioning (voir `lib/launcherArtifacts.ts`
-//! du panel), ce n'est donc pas par eux qu'un client est servi.
 //!
 //! Rien ici ne remonte d'erreur : une intégration de bureau qui échoue est un
 //! défaut cosmétique, jamais une raison d'empêcher le launcher de servir.
@@ -47,10 +38,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 // Le chemin réel de l'AppImage, et non `current_exe()` qui désigne le point de
-// montage temporaire : c'est le même besoin que pour trouver le bloc de
-// provisioning, d'où la fonction partagée. Un point de montage disparaît à la
-// fermeture et ne peut pas servir d'`Exec=`.
-use crate::provisioning::appimage_path;
+// montage temporaire : c'est le même besoin que pour trouver le pack client,
+// d'où la fonction partagée. Un point de montage disparaît à la fermeture et ne
+// peut pas servir d'`Exec=`.
+use crate::client_config::appimage_path;
 
 /// Tailles des dossiers `hicolor` de la spécification d'icônes XDG.
 const HICOLOR_SIZES: [u32; 13] = [16, 22, 24, 32, 36, 48, 64, 72, 96, 128, 192, 256, 512];
@@ -83,24 +74,14 @@ fn data_home() -> Option<PathBuf> {
     Some(home.join(".local/share"))
 }
 
-/// Identifiant de l'entrée : celui du bundle, suffixé de la clé du client.
+/// Identifiant de l'entrée : celui de l'application, tel que `lib::run` l'a
+/// déjà scopé au tenant.
 ///
 /// Reverse-DNS parce que c'est ce qu'attendent les environnements de bureau
-/// modernes, et dérivé de l'identifiant compilé plutôt qu'écrit en dur pour
-/// qu'un fork qui change le sien n'ait rien à changer ici.
-fn app_id(app: &AppHandle, client_key: &str) -> String {
-    let base = app.config().identifier.trim_matches('.');
-    let key: String = client_key
-        .trim()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .take(64)
-        .collect();
-    if key.is_empty() {
-        base.to_owned()
-    } else {
-        format!("{base}.{key}")
-    }
+/// modernes, et lu sur la configuration plutôt qu'écrit en dur pour qu'un fork
+/// qui change le sien n'ait rien à changer ici.
+fn app_id(app: &AppHandle) -> String {
+    app.config().identifier.trim_matches('.').to_owned()
 }
 
 /// Classe de fenêtre, telle que le serveur d'affichage la voit.
@@ -244,18 +225,12 @@ fn read_stamp(launcher_dir: &Path) -> Option<Stamp> {
     serde_json::from_slice(&std::fs::read(stamp_path(launcher_dir)).ok()?).ok()
 }
 
-/// Pose (ou met à jour) l'entrée de bureau du client.
+/// Pose (ou met à jour) l'entrée de bureau du tenant.
 ///
 /// Appelé à chaque démarrage : c'est l'empreinte qui évite le travail inutile,
 /// pas l'appelant. Un `name` vide laisse tout en place — mieux vaut l'entrée du
 /// démarrage précédent qu'une entrée sans nom.
-pub fn refresh(
-    app: &AppHandle,
-    launcher_dir: &Path,
-    client_key: &str,
-    name: &str,
-    icon_png: Option<&[u8]>,
-) {
+pub fn refresh(app: &AppHandle, launcher_dir: &Path, name: &str, icon_png: Option<&[u8]>) {
     let name = entry_name(name);
     if name.is_empty() {
         return;
@@ -268,7 +243,7 @@ pub fn refresh(
         return;
     };
 
-    let app_id = app_id(app, client_key);
+    let app_id = app_id(app);
     let exec = quote_exec(&appimage);
     let stamp = Stamp {
         app_id: app_id.clone(),
@@ -329,21 +304,6 @@ fn set_executable(path: &Path) {
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o100);
     let _ = std::fs::set_permissions(path, permissions);
-}
-
-/// Retire l'entrée et l'icône d'un client désappairé.
-pub fn remove_entry(app: &AppHandle, client_key: &str) {
-    let Some(data_home) = data_home() else {
-        return;
-    };
-    let app_id = app_id(app, client_key);
-
-    let applications = applications_dir(&data_home);
-    let _ = std::fs::remove_file(applications.join(format!("{app_id}.desktop")));
-    for size in HICOLOR_SIZES {
-        let _ = std::fs::remove_file(icon_path(&data_home, &format!("{size}x{size}"), &app_id));
-    }
-    refresh_database(&applications);
 }
 
 #[cfg(test)]
