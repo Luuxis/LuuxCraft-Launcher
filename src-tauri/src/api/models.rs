@@ -25,9 +25,6 @@ pub struct RemoteConfig {
     /// titre et l'icône de la fenêtre, eux, viennent du pack client local et
     /// n'attendent rien du panel (voir `branding`).
     pub brand: Option<RemoteBrand>,
-    /// Tauri updater endpoints published by the panel; they take precedence
-    /// over the built-in ones so a release can be pointed elsewhere.
-    pub updater_endpoints: Vec<String>,
     /// Yggdrasil-compatible server (authlib-injector style) enabling that
     /// extra sign-in method.
     pub yggdrasil: Option<String>,
@@ -255,9 +252,6 @@ impl RemoteConfig {
         "modules",
         "features",
         "brand",
-        "updater",
-        "updaterEndpoints",
-        "updater_endpoints",
         "yggdrasil",
         "yggdrasilServer",
         "yggdrasil_server",
@@ -303,7 +297,6 @@ impl RemoteConfig {
             links,
             modules,
             brand: RemoteBrand::from_object(object),
-            updater_endpoints: updater_endpoints(object),
             yggdrasil: pick_string(
                 object,
                 &["yggdrasil", "yggdrasilServer", "yggdrasil_server"],
@@ -331,24 +324,6 @@ impl RemoteBrand {
         };
         (parsed != Self::default()).then_some(parsed)
     }
-}
-
-/// `"updater": {"endpoints": [...]}`, `"updater": "https://…"` or a flat
-/// `"updaterEndpoints": [...]`; only https URLs are kept.
-fn updater_endpoints(object: &Map<String, Value>) -> Vec<String> {
-    let mut found = match pick(object, &["updater"]) {
-        Some(Value::Object(updater)) => {
-            pick_string_list(updater, &["endpoints", "urls", "endpoint", "url"])
-        }
-        Some(Value::String(url)) => vec![url.trim().to_owned()],
-        Some(Value::Array(_)) => pick_string_list(object, &["updater"]),
-        _ => Vec::new(),
-    };
-    if found.is_empty() {
-        found = pick_string_list(object, &["updaterEndpoints", "updater_endpoints"]);
-    }
-    found.retain(|url| url.starts_with("https://"));
-    found
 }
 
 impl Link {
@@ -671,7 +646,6 @@ mod tests {
         assert!(config.links.is_empty());
         // A panel that publishes none of the optional blocks stays valid.
         assert!(config.brand.is_none());
-        assert!(config.updater_endpoints.is_empty());
         assert!(config.yggdrasil.is_none());
     }
 
@@ -685,7 +659,6 @@ mod tests {
                 "subtitle": "Launcher",
                 "website": "https://luuxcraft.fr"
             },
-            "updater": { "endpoints": ["https://luuxcraft.fr/launcher/latest.json", "http://insecure"] },
             "yggdrasil": "https://auth.luuxcraft.fr",
             "modules": { "news": true, "skins": false }
         }))
@@ -695,11 +668,6 @@ mod tests {
         assert_eq!(brand.prefix.as_deref(), Some("Luux"));
         assert_eq!(brand.suffix.as_deref(), Some("Craft"));
         assert_eq!(brand.website.as_deref(), Some("https://luuxcraft.fr"));
-        // Only https endpoints are kept.
-        assert_eq!(
-            config.updater_endpoints,
-            vec!["https://luuxcraft.fr/launcher/latest.json"]
-        );
         assert_eq!(config.yggdrasil.as_deref(), Some("https://auth.luuxcraft.fr"));
         assert_eq!(config.modules.get("skins"), Some(&json!(false)));
         // Modelled blocks never leak into `extra`.
@@ -707,16 +675,14 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_flat_brand_and_a_single_updater_url() {
+    fn accepts_a_flat_brand() {
         let config = RemoteConfig::from_value(json!({
-            "brand": { "prefix": "Mon", "suffix": "Serveur" },
-            "updater": "https://example.com/latest.json"
+            "brand": { "prefix": "Mon", "suffix": "Serveur" }
         }))
         .unwrap();
         let brand = config.brand.expect("brand");
         assert_eq!(brand.prefix.as_deref(), Some("Mon"));
         assert_eq!(brand.name, None);
-        assert_eq!(config.updater_endpoints, vec!["https://example.com/latest.json"]);
     }
 
     #[test]

@@ -14,8 +14,9 @@
 //!
 //! Le pack est donc cherché **relativement à l'exécutable**, jamais dans un
 //! dossier de données : c'est ce qui fait que deux clients installés côte à côte
-//! sur la même machine lisent chacun le leur, et qu'un moteur mis à jour par
-//! l'updater retrouve son tenant sans rien réécrire.
+//! sur la même machine lisent chacun le leur, et qu'un moteur remplacé par le
+//! bootstrap retrouve son tenant sans rien réécrire — seul `engine/` change, le
+//! pack posé à côté reste en place.
 //!
 //! Sous Linux le moteur est une AppImage : `current_exe()` y désigne le binaire
 //! *à l'intérieur* du point de montage temporaire, pas le fichier installé. Le

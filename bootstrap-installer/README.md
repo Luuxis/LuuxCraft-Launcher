@@ -192,7 +192,7 @@ clair plutôt qu'un binaire incapable de la lire.
 ## Limites connues
 
 - L'exécutable du moteur n'est pas nommé dans le manifeste : il est **détecté** dans le bundle
-  décompressé (le `.exe` d'un `nsis-zip`, le fichier de `Contents/MacOS` d'un `app-tar-gz`).
+  décompressé (le `.exe` d'un `exe-zip`, le fichier de `Contents/MacOS` d'un `app-tar-gz`).
   S'il y en a plusieurs, celui dont le nom correspond au client l'emporte, sinon le plus gros.
 - macOS : un `Contents/Frameworks` présent dans le bundle publié ne serait pas repris. Le
   moteur tauri n'en embarque pas, la webview venant du système.

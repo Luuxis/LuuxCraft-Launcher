@@ -39,7 +39,6 @@ pub struct Settings {
     pub instances: HashMap<String, InstanceSettings>,
     pub ui: UiSettings,
     pub server_status_refresh_seconds: u64,
-    pub check_updates_on_startup: bool,
 }
 
 impl Default for Settings {
@@ -62,7 +61,6 @@ impl Default for Settings {
             instances: HashMap::new(),
             ui: UiSettings::default(),
             server_status_refresh_seconds: 30,
-            check_updates_on_startup: true,
         }
     }
 }

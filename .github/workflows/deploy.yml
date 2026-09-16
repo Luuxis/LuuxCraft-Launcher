@@ -6,26 +6,25 @@ name: 'publish'
 #              C'est le seul fichier qu'un joueur télécharge. Il ne contient
 #              aucune identité : le panel lui ajoute 32 octets au téléchargement
 #              pour lui dire de quel tenant il s'agit.
-#   engine     le moteur tauri générique, publié **uniquement** en paquet de
-#              mise à jour (nsis-zip / app-tar-gz / appimage). Il n'est jamais
-#              installé par un installeur d'OS — c'est le bootstrap qui le pose,
-#              et l'updater qui le remplace. D'où l'absence de msi, dmg, deb et
-#              rpm : personne n'a plus de raison de les produire.
+#   engine     le moteur tauri générique, publié en artefact **portable** :
+#              exe-zip (windows), app-tar-gz (darwin), appimage (linux). Aucun
+#              installeur d'OS n'est produit — ni msi, ni nsis, ni dmg, ni deb,
+#              ni rpm : un installeur écrirait dans Program Files ou /opt, alors
+#              que le moteur doit atterrir dans le dossier du tenant, posé là
+#              par le bootstrap.
 #
 # Rien n'est compilé par client, et aucune release GitHub n'est créée : les
 # octets vivent dans le R2 du panel, qui les sert.
 #
 # À configurer une fois sur le dépôt :
-#   Variables  PANEL_URL                          https://luuxcraft.fr
-#   Secrets    PANEL_BUILD_KEY                    Admin → Configuration → Builds du launcher
-#              TAURI_SIGNING_PRIVATE_KEY          contenu de ~/.tauri/luuxcraft-launcher.key
-#              TAURI_SIGNING_PRIVATE_KEY_PASSWORD vide si la clé n'en a pas
+#   Variables  PANEL_URL        https://luuxcraft.fr
+#   Secrets    PANEL_BUILD_KEY  Admin → Configuration → Builds du launcher
 #
-# Sans la clé de signature, les paquets du moteur partent sans signature et la
-# CI s'arrête avant même de les téléverser — c'est voulu : une signature
-# manquante ne se verrait sinon qu'au moment où un joueur tente la mise à jour,
-# après avoir téléchargé le paquet en entier. Les bootstraps, eux, ne sont pas
-# des artefacts d'updater et n'ont pas de signature.
+# Aucune clé de signature n'est nécessaire : personne n'en vérifierait une. Le
+# moteur est mis à jour par le bootstrap — cible du raccourci, donc exécuté à
+# chaque lancement — qui compare le SHA-256 du moteur au manifeste du panel et
+# le remplace si besoin. L'intégrité tient à cette empreinte, calculée sur les
+# octets téléversés ici.
 
 on:
   workflow_dispatch:
@@ -169,9 +168,11 @@ jobs:
           ARTIFACT_ARCH: ${{ matrix.arch }}
         run: node .github/scripts/panel-release.mjs upload
 
-  # Le moteur générique. Les installeurs d'OS que `tauri build` produit au
-  # passage (le `-setup.exe` NSIS) restent sur le runner : le script de
-  # téléversement n'accepte que les formats de mise à jour.
+  # Le moteur générique, en artefact portable sur les trois OS : c'est le
+  # bootstrap qui pose ces octets dans le dossier du tenant, aucun installeur
+  # n'intervient. D'où `--no-bundle` sous Windows — un `-setup.exe` NSIS est un
+  # installeur, il irait écrire dans Program Files, hors de l'isolation par
+  # tenant.
   engine:
     needs: open-release
     strategy:
@@ -180,25 +181,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `target` et `arch` sont les valeurs que `tauri-plugin-updater`
-          # substitue dans `{{target}}` et `{{arch}}` : le panel les range
-          # telles quelles pour que le manifeste de mise à jour tombe pile.
+          # `target` et `arch` sont les créneaux du manifeste du panel : le
+          # bootstrap demande le sien et le panel doit y trouver exactement ces
+          # valeurs.
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin --bundles app'
             target: 'darwin'
             arch: 'aarch64'
+            # Avec `--target`, tauri range le bundle sous ce triplet plutôt que
+            # sous `release/` : l'étape d'empaquetage a besoin du chemin exact.
+            triple: 'aarch64-apple-darwin'
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin --bundles app'
             target: 'darwin'
             arch: 'x86_64'
+            triple: 'x86_64-apple-darwin'
           - platform: 'ubuntu-latest'
             args: '--bundles appimage'
             target: 'linux'
             arch: 'x86_64'
+            triple: ''
           - platform: 'windows-latest'
-            args: '--bundles nsis'
+            args: '--no-bundle'
             target: 'windows'
             arch: 'x86_64'
+            triple: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -233,20 +240,76 @@ jobs:
         run: npm install
 
       - name: build the engine
-        id: build
-        uses: tauri-apps/tauri-action@v1
-        env:
-          # Sans `tagName`, l'action ne crée aucune release GitHub : elle
-          # construit, signe, et expose les chemins produits.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          args: ${{ matrix.args }}
+        shell: bash
+        run: npm run tauri build -- ${{ matrix.args }}
 
-      - name: upload the update bundle to the panel
+      # Un seul fichier par plateforme, portable, prêt à être posé tel quel par
+      # le bootstrap. L'emballage se fait ici plutôt que dans le bundler tauri :
+      # ce qu'il sait produire, ce sont des installeurs d'OS, et le bootstrap a
+      # besoin d'une archive qu'il puisse simplement extraire dans le dossier du
+      # tenant.
+      - name: package the engine
+        id: package
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.build.outputs.artifactPaths }}
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Le nom de produit porte une espace (« LuuxCraft Launcher ») et n'a
+          # pas à être recopié ici : il est lu là où tauri le lit.
+          product=$(node -p "require('./src-tauri/tauri.conf.json').productName")
+          # Sans `--target`, tauri construit sous `target/release/` ; avec, sous
+          # `target/<triplet>/release/`.
+          out="src-tauri/target${TRIPLE:+/$TRIPLE}/release"
+
+          case "$TARGET" in
+            windows)
+              # `--no-bundle` laisse l'exécutable brut : `bundle.resources` est
+              # vide, il se suffit à lui-même. Le zip ne contient que lui, à la
+              # racine — d'où le `cd`, sinon 7-Zip y recopierait toute
+              # l'arborescence `src-tauri/target/release/`.
+              exe="$out/$product.exe"
+              [ -f "$exe" ] || { echo "::error::exécutable introuvable : $exe"; exit 1; }
+              mkdir -p stage
+              cp "$exe" "stage/$product.exe"
+              artifact="dist/engine-windows-$ARCH.zip"
+              (cd stage && 7z a -tzip -mx=9 "../$artifact" "$product.exe" > /dev/null)
+              ;;
+            darwin)
+              # Le `.app` est une arborescence : il faut un fichier unique pour
+              # le téléverser. `tar` préserve les permissions Unix, condition
+              # pour que le Mach-O reste exécutable après déballage.
+              app="$out/bundle/macos/$product.app"
+              [ -d "$app" ] || { echo "::error::bundle introuvable : $app"; exit 1; }
+              artifact="dist/engine-darwin-$ARCH.app.tar.gz"
+              # Sans COPYFILE_DISABLE, le tar de macOS ajoute les forks de
+              # ressources sous forme d'entrées `._*` que les autres outils
+              # déballent en fichiers parasites dans le bundle.
+              COPYFILE_DISABLE=1 tar -czf "$artifact" -C "$(dirname "$app")" "$product.app"
+              ;;
+            linux)
+              # L'AppImage est déjà un exécutable portable d'un seul fichier :
+              # rien à empaqueter, on le sert tel quel.
+              shopt -s nullglob
+              images=("$out/bundle/appimage/"*.AppImage)
+              [ "${#images[@]}" -eq 1 ] || { echo "::error::attendu un AppImage, trouvé ${#images[@]}"; exit 1; }
+              artifact="${images[0]}"
+              ;;
+            *)
+              echo "::error::plateforme inconnue : $TARGET"; exit 1 ;;
+          esac
+
+          ls -l "$artifact"
+          # En JSON : le nom d'un AppImage produit par tauri contient une espace.
+          node -e 'process.stdout.write("paths="+JSON.stringify([process.argv[1]])+"\n")' "$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: upload the engine to the panel
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.package.outputs.paths }}
           ARTIFACT_ROLE: 'engine'
           ARTIFACT_TARGET: ${{ matrix.target }}
           ARTIFACT_ARCH: ${{ matrix.arch }}
@@ -254,7 +317,7 @@ jobs:
 
   # C'est `needs` qui donne le « tout ou rien » : un seul job de build en échec
   # ne publie rien. Le panel, lui, refuse en plus un artefact dont les octets
-  # manquent ou un paquet de mise à jour sans signature.
+  # manquent.
   publish-release:
     # `open-release` est dans les besoins pour son `outputs.version`, repris
     # dans le résumé.
@@ -282,7 +345,9 @@ jobs:
             echo
             echo "Canal : \`${{ inputs.channel || 'stable' }}\`"
             echo
-            echo "Les launchers installés verront la mise à jour du moteur à leur prochain démarrage."
+            echo "Les launchers installés remplaceront leur moteur au prochain lancement : le bootstrap"
+            echo "compare le SHA-256 publié à celui du moteur posé chez le joueur."
+            echo
             echo "Les nouveaux téléchargements passent par"
             echo "\`/api/v1/launchers/<id du tenant>/download?os=windows|linux|macos\`,"
             echo "qui sert le bootstrap figé avec l'overlay du tenant."

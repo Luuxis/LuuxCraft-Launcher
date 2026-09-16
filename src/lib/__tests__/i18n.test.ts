@@ -6,7 +6,7 @@ describe("i18n", () => {
   it("interpolates parameters and plurals", () => {
     expect(t("home.playersOnline", { count: 1 })).toBe("1 joueur en ligne");
     expect(t("home.playersOnline", { count: 3 })).toBe("3 joueurs en ligne");
-    expect(t("update.banner", { version: "1.2.0" })).toBe("Mise à jour 1.2.0 disponible");
+    expect(t("toasts.accountAdded", { name: "Steve" })).toBe("Compte Steve ajouté");
   });
 
   it("returns the key when missing", () => {

@@ -23,20 +23,6 @@ use crate::client_config::ClientConfig;
 /// its own `dataDirectory`.
 const DEFAULT_DATA_DIRECTORY: &str = "luuxcraft";
 
-/// Panel route of the dynamic update server, relative to the API base URL.
-///
-/// Built from the base URL rather than hard-coded so a launcher pointed at
-/// another panel takes its updates from that panel too. Les versions sont
-/// globales : il n'y a qu'un moteur compilé, donc une seule chaîne de mise à
-/// jour pour tous les tenants d'un panel. The braces are the placeholders
-/// `tauri-plugin-updater` substitutes itself.
-fn updater_endpoints_for(base_url: &str) -> Vec<String> {
-    vec![format!(
-        "{}/launcher/update/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}",
-        base_url.trim_end_matches('/')
-    )]
-}
-
 /// Optional Yggdrasil-compatible server (authlib-injector style). Mojang's own
 /// `authserver.mojang.com` is discontinued, so that sign-in method is only
 /// offered when a compatible server is set here.
@@ -54,7 +40,6 @@ pub struct LauncherConfig {
     /// Folder name of the game data under the platform data directory, used
     /// when the panel config does not provide `dataDirectory`.
     pub data_directory: String,
-    pub updater: UpdaterConfig,
     pub auth: AuthConfig,
     pub news: NewsConfig,
     pub server_status: ServerStatusConfig,
@@ -73,15 +58,6 @@ pub struct ApiConfig {
 
 fn default_timeout() -> u64 {
     15
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdaterConfig {
-    /// Tauri updater endpoints (static JSON manifest or dynamic server).
-    /// Empty means "auto-update disabled".
-    #[serde(default)]
-    pub endpoints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -225,19 +201,15 @@ impl LauncherConfig {
     /// Infaillible : c'est `ClientConfig` qui valide l'adresse du panel et
     /// l'identifiant du tenant, avant même que le moteur n'ouvre une fenêtre.
     pub fn from_client(client: &ClientConfig) -> Self {
-        let base_url = client.api_base_url.clone();
         Self {
             user_id: client.tenant_id.clone(),
             slug: client.slug.clone(),
             display_name: client.display_name.clone(),
             api: ApiConfig {
-                base_url: base_url.clone(),
+                base_url: client.api_base_url.clone(),
                 timeout_seconds: default_timeout(),
             },
             data_directory: DEFAULT_DATA_DIRECTORY.to_owned(),
-            updater: UpdaterConfig {
-                endpoints: updater_endpoints_for(&base_url),
-            },
             auth: AuthConfig {
                 yggdrasil_server: YGGDRASIL_SERVER.map(str::to_owned),
             },
@@ -425,31 +397,16 @@ mod tests {
         assert!(config.downloads.max_concurrency <= 30);
     }
 
-    /// Les mises à jour suivent le panel du pack : un moteur pointé sur un
-    /// autre panel ne doit pas continuer à installer les versions du premier.
+    /// Le moteur ne parle qu'au panel de son pack : changer l'adresse du pack
+    /// doit déplacer tous les appels, sans qu'aucune adresse du premier panel
+    /// ne subsiste dans la configuration.
     #[test]
-    fn the_updater_follows_the_panel_of_the_pack() {
+    fn the_api_follows_the_panel_of_the_pack() {
         let mut client = ClientConfig::sample();
         client.api_base_url = "https://autre-panel.fr/api".into();
         let config = LauncherConfig::from_client(&client);
-        assert!(
-            config
-                .updater
-                .endpoints
-                .iter()
-                .all(|endpoint| endpoint.starts_with("https://autre-panel.fr/api/")),
-            "updates must follow the panel: {:?}",
-            config.updater.endpoints
-        );
-    }
-
-    #[test]
-    fn updater_endpoints_keep_the_plugin_placeholders() {
-        let endpoints = updater_endpoints_for("https://luuxcraft.fr/api");
-        assert_eq!(
-            endpoints,
-            vec!["https://luuxcraft.fr/api/launcher/update/{{target}}/{{arch}}/{{current_version}}"]
-        );
+        assert_eq!(config.api.base_url, "https://autre-panel.fr/api");
+        assert!(config.user_api_url().starts_with("https://autre-panel.fr/api/"));
     }
 
     #[test]

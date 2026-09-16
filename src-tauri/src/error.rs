@@ -228,22 +228,6 @@ impl From<crust_core::launcher::Error> for AppError {
     }
 }
 
-impl From<tauri_plugin_updater::Error> for AppError {
-    fn from(error: tauri_plugin_updater::Error) -> Self {
-        use tauri_plugin_updater::Error;
-        match error {
-            Error::EmptyEndpoints => Self::new("update_not_configured", error.to_string()),
-            Error::Reqwest(inner) => {
-                let mut mapped = Self::from(inner);
-                mapped.code = "update_failed";
-                mapped
-            }
-            Error::ReleaseNotFound => Self::new("update_failed", error.to_string()),
-            other => Self::new("update_failed", other.to_string()),
-        }
-    }
-}
-
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_owned()

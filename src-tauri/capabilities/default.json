@@ -16,7 +16,6 @@
     "opener:default",
     "log:default",
     "process:default",
-    "updater:default",
     "dialog:default",
     "window-state:default"
   ]

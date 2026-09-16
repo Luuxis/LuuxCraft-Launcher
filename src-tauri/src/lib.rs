@@ -6,7 +6,12 @@
 //! the window), `api` (panel client and models), `accounts`/`auth`/`sessions`
 //! (multi-account, sign-in flows and automatic renewal), `skins`,
 //! `instances`/`game` (install and launch through `crust_core`), `java`,
-//! `settings`, `status`, `updater`, `system`, `logging`.
+//! `settings`, `status`, `system`, `logging`.
+//!
+//! Le moteur ne se met plus à jour lui-même : c'est le bootstrap, cible du
+//! raccourci et donc exécuté à chaque lancement, qui compare le SHA-256 du
+//! moteur au manifeste et le remplace. Embarquer un updater ici ferait
+//! doublon et, sous Windows, réinstallerait hors du dossier du tenant.
 
 mod accounts;
 mod api;
@@ -28,7 +33,6 @@ mod skins;
 mod state;
 mod status;
 mod system;
-mod updater;
 mod util;
 
 use tauri::{Manager, WebviewWindowBuilder};
@@ -90,7 +94,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
@@ -190,8 +193,6 @@ pub fn run() {
             instances::game_busy,
             instances::game_kill,
             status::server_status,
-            updater::update_check,
-            updater::update_install,
             system::system_info,
             system::open_folder,
             system::open_external,

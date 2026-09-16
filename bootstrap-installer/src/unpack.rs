@@ -1,6 +1,6 @@
 //! Décompression du bundle moteur.
 //!
-//! Trois formats, un par plateforme (contrat §5) : `nsis-zip` sous Windows,
+//! Trois formats, un par plateforme (contrat §5) : `exe-zip` sous Windows,
 //! `app-tar-gz` sous macOS, `appimage` sous Linux. Le format est lu dans le
 //! manifeste et non déduit de l'extension : c'est le panel qui sait ce qu'il a
 //! publié.
@@ -16,7 +16,7 @@ use std::path::Path;
 use crate::error::{BootstrapError, Result};
 use crate::paths;
 
-/// Décompresse une archive zip (bundle `nsis-zip`).
+/// Décompresse une archive zip (bundle `exe-zip`).
 pub fn zip(archive: &Path, destination: &Path) -> Result<()> {
     let file =
         File::open(archive).map_err(|error| BootstrapError::io("La lecture", archive, &error))?;

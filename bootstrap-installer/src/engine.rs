@@ -80,15 +80,15 @@ fn prepare(
     manifest: &Manifest,
 ) -> Result<PathBuf> {
     match normalize_format(&manifest.engine.format).as_str() {
-        "nsiszip" | "zip" => {
+        "exezip" => {
             unpack::zip(archive, prepared)?;
             find_executable(prepared, manifest)
         }
-        "apptargz" | "targz" | "tgz" => {
+        "apptargz" => {
             unpack::tar_gz(archive, staging)?;
             flatten_macos_bundle(staging, prepared, manifest)
         }
-        "appimage" | "bin" | "binary" | "raw" | "exe" => {
+        "appimage" => {
             paths::create_dir(prepared)?;
             let name = binary_name(manifest);
             let target = prepared.join(&name);
@@ -175,8 +175,8 @@ fn find_executable(root: &Path, manifest: &Manifest) -> Result<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn pick(files: &[PathBuf], manifest: &Manifest) -> Option<PathBuf> {
-    // Un `.nsis.zip` ne contient qu'un exécutable ; on écarte quand même les
-    // désinstalleurs, qui effaceraient l'installation au lieu de la lancer.
+    // Un `exe-zip` ne contient que l'exécutable du moteur ; on écarte quand même
+    // les désinstalleurs, qui effaceraient l'installation au lieu de la lancer.
     let candidates: Vec<PathBuf> = files
         .iter()
         .filter(|path| has_extension(path.as_path(), "exe"))
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn formats_are_matched_whatever_the_separator() {
-        assert_eq!(normalize_format("nsis-zip"), "nsiszip");
+        assert_eq!(normalize_format("exe-zip"), "exezip");
         assert_eq!(normalize_format("app.tar.gz"), "apptargz");
         assert_eq!(normalize_format("AppImage"), "appimage");
     }

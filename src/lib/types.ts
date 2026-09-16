@@ -15,7 +15,6 @@ export interface LauncherConfig {
   displayName: string;
   api: { baseUrl: string; timeoutSeconds: number };
   dataDirectory: string;
-  updater: { endpoints: string[] };
   auth: { yggdrasilServer: string | null };
   news: { limit: number };
   serverStatus: { refreshSeconds: number; timeoutMs: number };
@@ -66,7 +65,6 @@ export interface Settings {
   instances: Record<string, InstanceSettings>;
   ui: { theme: "dark" | "light" | "system"; reduceMotion: boolean };
   serverStatusRefreshSeconds: number;
-  checkUpdatesOnStartup: boolean;
 }
 
 // ── Accounts ────────────────────────────────────────────────────────────────
@@ -133,7 +131,6 @@ export interface RemoteConfig {
   links: Link[];
   modules: Record<string, unknown>;
   brand: RemoteBrand | null;
-  updaterEndpoints: string[];
   yggdrasil: string | null;
   extra: Record<string, unknown>;
 }
@@ -231,7 +228,7 @@ export interface JavaRequirement {
   source: "panel" | "mojang";
 }
 
-// ── Status, updates, system ─────────────────────────────────────────────────
+// ── Status & système ────────────────────────────────────────────────────────
 
 export interface ServerStatus {
   online: boolean;
@@ -247,24 +244,6 @@ export interface ServerStatus {
   error: string | null;
   checkedAt: number;
 }
-
-export interface UpdateInfo {
-  version: string;
-  currentVersion: string;
-  body: string | null;
-  date: string | null;
-}
-
-export interface UpdateCheck {
-  configured: boolean;
-  update: UpdateInfo | null;
-}
-
-export type UpdateEvent =
-  | { event: "started"; data: { contentLength: number | null } }
-  | { event: "progress"; data: { downloaded: number; contentLength: number | null } }
-  | { event: "finished" }
-  | { event: "installed" };
 
 export interface SystemInfo {
   totalMemoryMb: number | null;

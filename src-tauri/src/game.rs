@@ -621,7 +621,9 @@ async fn open_game_log(state: &AppState, instance_id: &str) -> Option<tokio::fs:
 /// exit is postponed until the game has been killed and reaped.
 pub fn on_exit_requested(app: &AppHandle, code: Option<i32>, api: &tauri::ExitRequestApi) {
     if code.is_some() {
-        // Programmatic exit or restart (updater): never block it.
+        // Un code veut dire que la sortie vient du code, pas de l'utilisateur :
+        // c'est l'`app.exit(0)` déclenché une fois le jeu lié arrêté. La
+        // repousser une seconde fois laisserait le moteur ouvert pour toujours.
         return;
     }
     let state = app.state::<AppState>();

@@ -14,7 +14,7 @@ La distribution repose sur trois objets indépendants, produits et servis sépar
 | Couche | Ce que c'est | Qui la produit | Ce qu'elle sait du tenant |
 |---|---|---|---|
 | **Bootstrap** | `bootstrap-installer/`, un petit binaire Rust sans interface ni webview | la CI, un par OS | 16 octets d'UUID ajoutés au téléchargement |
-| **Moteur** | ce dépôt : l'application tauri, générique | la CI, un paquet de mise à jour par plateforme | rien du tout |
+| **Moteur** | ce dépôt : l'application tauri, générique | la CI, un artefact portable par plateforme | rien du tout |
 | **Pack client** | `client_config.json`, `icon.png`, `icon.ico`, `icon.icns` | le panel, à la volée | tout |
 
 Le joueur ne télécharge **que le bootstrap**. Les octets stockés dans le R2 du panel sont les
@@ -64,7 +64,7 @@ launchers ne pourraient pas tourner en même temps.
 
 - **Pack client modifié** → seuls les fichiers dont le `sha256` diffère sont réécrits ; le
   moteur n'est pas retéléchargé.
-- **Moteur modifié** → seul le bundle du moteur est remplacé ; `client/` et les dossiers de
+- **Moteur modifié** → seul l'artefact du moteur est remplacé ; `client/` et les dossiers de
   jeu sont intacts.
 - **Modpack** → inchangé, déjà différentiel par hash.
 
@@ -96,9 +96,9 @@ doit bien commencer quelque part.
 `src-tauri/src/config.rs` garde les constantes qu'aucune API ne fournit : `YGGDRASIL_SERVER`
 (optionnel, le serveur legacy de Mojang étant arrêté) et les valeurs par défaut des réglages
 (mémoire, fenêtre, téléchargements, statut serveur, actualités) appliquées tant que
-l'utilisateur n'a rien changé. Les points de mise à jour sont dérivés de l'adresse du panel du
-pack client, pas écrits en dur : un launcher installé depuis un autre panel prend ses mises à
-jour de ce panel-là.
+l'utilisateur n'a rien changé. Le moteur ne connaît aucune adresse de mise à jour : c'est le
+bootstrap qui interroge le panel du pack client, donc un launcher installé depuis un autre
+panel prend ses mises à jour de ce panel-là.
 
 Le titre de la fenêtre et l'icône sont appliqués depuis le pack **local**, avant le premier
 rendu : rien n'est téléchargé pour brander la fenêtre, et le nom générique ne clignote pas au
@@ -119,7 +119,6 @@ Routes consommées (mêmes routes que les launchers de référence LuuxCraft) :
   | `socialLinks` | Liens affichés sur l'accueil | aucun lien |
   | `modules` (ou `features`) | Bascules par module : `news`, `skins`, `links`, `serverStatus`, `accounts`, `settings` | tout est affiché |
   | `brand` | Nom, wordmark (`prefix` + `suffix` en dégradé), sous-titre, site | identité intégrée (`src/config/brand.ts`) |
-  | `updater.endpoints` | Surcharge les points de mise à jour (https uniquement) | point dérivé de l'adresse du panel |
   | `yggdrasil` | Serveur Yggdrasil/authlib-injector, ajoute l'onglet de connexion | méthode non proposée |
 
   Tout champ inconnu est conservé dans `extra`, rien ne casse s'il en manque un.
@@ -151,7 +150,6 @@ src-tauri/src/
   instances.rs / game.rs    installation, vérification, lancement (crust_core), processus, logs
   settings.rs               paramètres persistants (fusion + bornes)
   status.rs                 ping serveur (crust_core::network::Status)
-  updater.rs                tauri-plugin-updater (signatures vérifiées)
   system.rs / logging.rs    infos machine, ouverture de dossiers, journalisation
 src/
   store/AppStore.tsx        état global + actions (IPC typé dans lib/ipc.ts)
@@ -216,26 +214,25 @@ compte réellement expiré est marqué « reconnexion requise ».
 
 ## Mises à jour automatiques
 
-Le moteur se met à jour par `tauri-plugin-updater`. La clé publique est dans
-`src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) ; la clé privée correspondante est
-**hors dépôt** : `~/.tauri/luuxcraft-launcher.key` (générée avec `npx tauri signer generate`,
-sans mot de passe). Ne la perdez pas : sans elle, aucune mise à jour ne pourra être signée pour
-les launchers déjà installés.
+**C'est le bootstrap qui met le moteur à jour**, pas le moteur lui-même. Le raccourci du joueur
+pointe sur le bootstrap, qui est donc exécuté à chaque lancement : il relit le manifeste du
+tenant, compare le `sha256`
+annoncé pour le moteur à celui du moteur posé sur le disque, remplace les octets s'ils
+diffèrent, puis lance le moteur. Une seule mécanique de mise à jour, la même pour le moteur et
+pour le pack client.
 
-Le point de mise à jour n'est pas un manifeste statique mais le **serveur dynamique du panel** :
+Le moteur est publié en artefact **portable** — un exécutable zippé, un `.app` empaqueté, un
+AppImage — jamais en installeur d'OS. Un installeur écrirait dans `Program Files` ou `/opt`,
+hors du dossier propre au tenant ; c'est précisément ce que l'isolation par tenant interdit.
 
-```
-{baseUrl}/launcher/update/{{target}}/{{arch}}/{{current_version}}
-```
+Il n'y a **aucune signature minisign** : rien ne la vérifierait plus. L'intégrité repose sur le
+`sha256` publié dans le manifeste, que le bootstrap contrôle avant de mettre le fichier en
+place — il écrit sous un nom temporaire et ne renomme qu'après vérification, si bien qu'un
+moteur à moitié téléchargé n'est jamais lancé.
 
-Le panel répond un `204` quand il n'y a rien à installer, et sinon le JSON attendu par le
-plugin (`version`, `notes`, `pub_date`, `url`, `signature`). Un panel peut surcharger la liste
-par `updater.endpoints` dans `/config` : ce qu'il publie gagne sur la valeur dérivée.
-
-Les paquets de mise à jour sont servis **intacts** : la signature minisign porte sur ces octets
-exacts, un seul octet en plus la casse. C'est l'autre raison pour laquelle l'identité du
-serveur vit dans le pack client et non dans le binaire — une mise à jour ne peut rien lui
-faire perdre.
+Les octets du moteur sont servis **intacts**, identiques pour tous les tenants : l'empreinte
+publiée porte sur eux, et c'est une raison de plus pour que l'identité du serveur vive dans le
+pack client et non dans le binaire — une mise à jour ne peut rien lui faire perdre.
 
 Comme le moteur est unique, les mises à jour sont globales : une release, une chaîne de mises à
 jour, tous les serveurs. Le pack client, lui, se met à jour de son côté, au démarrage, fichier
@@ -246,19 +243,25 @@ par fichier.
 `.github/workflows/deploy.yml` publie **deux lignes de produit** vers le panel, via
 `.github/scripts/panel-release.mjs` :
 
-| Rôle | Ce qui est construit | Formats | Signature minisign |
-|---|---|---|---|
-| `bootstrap` | `cargo build --release` dans `bootstrap-installer/` | `exe` (windows), `bin` (linux, darwin) | non |
-| `engine` | `tauri build`, paquets de mise à jour uniquement | `nsis-zip` (windows), `app-tar-gz` (darwin), `appimage` (linux) | oui |
+| Rôle | Ce qui est construit | Formats |
+|---|---|---|
+| `bootstrap` | `cargo build --release` dans `bootstrap-installer/` | `exe` (windows), `bin` (linux, darwin) |
+| `engine` | `tauri build`, artefacts portables uniquement | `exe-zip` (windows), `app-tar-gz` (darwin), `appimage` (linux) |
 
-Il n'y a **ni msi, ni dmg, ni deb, ni rpm** : plus rien n'installe le moteur par le
-gestionnaire de paquets de l'OS, c'est le bootstrap qui s'en charge. L'installeur NSIS que
-`tauri build` produit au passage reste sur le runner — le script de téléversement n'accepte que
-les formats ci-dessus et écarte le reste en le disant dans les logs.
+Il n'y a **ni nsis, ni msi, ni dmg, ni deb, ni rpm** : rien n'installe le moteur par le
+gestionnaire de paquets de l'OS, c'est le bootstrap qui le pose dans le dossier du tenant. D'où
+le détail de chaque format :
+
+- **windows** — `tauri build --no-bundle`, puis `LuuxCraft Launcher.exe` zippé seul, à la
+  racine de l'archive. `bundle.resources` est vide : l'exécutable se suffit à lui-même.
+- **darwin** — `--bundles app` donne un `.app`, que la CI empaquette en `.app.tar.gz` en
+  préservant les permissions Unix, sans quoi le Mach-O perdrait son bit exécutable.
+- **linux** — l'`.AppImage` est déjà un fichier unique et portable, servi tel quel.
 
 Le bootstrap macOS est un binaire **universel** (`lipo` de `x86_64` + `aarch64`) : la route de
 téléchargement du panel ne connaît que l'OS, jamais l'architecture de la machine du visiteur.
-Le moteur, lui, est publié par architecture, parce que l'updater substitue `{{arch}}`.
+Le moteur, lui, est publié par architecture, parce que le manifeste a un créneau par
+`target`/`arch`.
 
 À configurer une fois sur le dépôt :
 
@@ -266,11 +269,10 @@ Le moteur, lui, est publié par architecture, parce que l'updater substitue `{{a
 |---|---|---|
 | `PANEL_URL` | variable | `https://luuxcraft.fr` |
 | `PANEL_BUILD_KEY` | secret | Admin → Configuration → Builds du launcher |
-| `TAURI_SIGNING_PRIVATE_KEY` | secret | contenu de `~/.tauri/luuxcraft-launcher.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | secret | vide si la clé n'en a pas |
 
-C'est toute la configuration : **aucun identifiant de stockage à fournir**. Les octets sont
-téléversés en multipart vers le panel, qui les écrit par sa propre liaison R2 — la même qui les
+Une variable et un secret, c'est tout : **aucune clé de signature** — le bootstrap se fie au
+`sha256` du manifeste — et **aucun identifiant de stockage à fournir**. Les
+octets sont téléversés en multipart vers le panel, qui les écrit par sa propre liaison R2 — la même qui les
 relit ensuite pour vérifier. Un artefact accepté est donc forcément un artefact visible, là où
 des identifiants S3 mal réglés pourraient écrire dans un bucket que le panel ne lit pas. Le
 découpage en parts enlève par ailleurs toute limite de taille (un AppImage embarque webkit2gtk
@@ -280,9 +282,8 @@ Le workflow part sur un tag `v*` ou à la main (canal `stable`/`beta`, notes de 
 possibilité de laisser la release en préparation). La version publiée est celle de
 `src-tauri/tauri.conf.json`, pas celle du tag. La publication est **tout ou rien**, à deux
 niveaux : le job de publication dépend des jobs de build, donc une plateforme en échec ne
-publie rien ; et le panel refuse en plus un artefact dont les octets manquent ou un paquet de
-mise à jour sans signature. La CI, elle, s'arrête avant même de téléverser un paquet moteur
-sans `.sig` — inutile d'envoyer des centaines de mégaoctets pour se faire refuser à la fin.
+publie rien ; et le panel refuse en plus un artefact dont les octets manquent ou dont la taille
+ne correspond pas à celle annoncée.
 
 Le bootstrap est refait à chaque release même quand son code n'a pas bougé : une release est un
 lot complet, et c'est le lot publié que le panel sert. Changer le bootstrap est en revanche un
@@ -299,12 +300,12 @@ précédente, ou n'ont plus rien si c'était la seule. La CI l'annonce par un `:
 la version écrasée était publiée. Pour ne rien interrompre, incrémenter la version dans
 `src-tauri/tauri.conf.json` plutôt que reconstruire la même.
 
-Build signé en local, pour vérifier avant de pousser :
+Build local, pour vérifier avant de pousser — rien à signer, rien à exporter :
 
 ```bash
-export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/luuxcraft-launcher.key)"   # contenu de la clé
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-npm run tauri build -- --bundles nsis          # ou app / appimage selon la plateforme
+npm run tauri build -- --no-bundle            # windows : l'exécutable brut, à zipper
+npm run tauri build -- --bundles app          # macOS : le .app, à empaqueter en .app.tar.gz
+npm run tauri build -- --bundles appimage     # linux : l'AppImage, portable tel quel
 cargo build --release --manifest-path bootstrap-installer/Cargo.toml
 ```
 
@@ -315,7 +316,8 @@ cargo build --release --manifest-path bootstrap-installer/Cargo.toml
   des secrets de session.
 - CSP stricte (`src-tauri/tauri.conf.json`), HTML des actualités filtré par liste blanche,
   liens ouverts uniquement en `http(s)` via le navigateur.
-- Fichiers d'instance vérifiés par taille et SHA-1 (crust_core), mises à jour signées.
+- Fichiers d'instance vérifiés par taille et SHA-1 (crust_core) ; moteur et pack client
+  vérifiés par SHA-256 face au manifeste du panel, servi en https.
 - Tout ce que le bootstrap télécharge est vérifié par SHA-256 avant d'être mis en place, et
   écrit sous un nom temporaire puis renommé : un moteur à moitié téléchargé n'est jamais lancé.
 - L'overlay n'est pas signé et n'a pas à l'être : il ne contient qu'un identifiant public, et

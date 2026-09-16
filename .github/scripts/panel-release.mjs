@@ -7,10 +7,10 @@
  *   bootstrap  l'installeur figé (`bootstrap-installer/`), un par OS. C'est lui
  *              que le joueur télécharge ; le panel lui ajoute à la volée les 32
  *              octets qui désignent le tenant. Il ne contient aucune identité.
- *   engine     le moteur tauri générique, livré **uniquement** en paquet de
- *              mise à jour (`nsis-zip`, `app-tar-gz`, `appimage`) : il n'est
- *              jamais installé par un installeur d'OS, c'est le bootstrap qui
- *              le pose et qui le remplace.
+ *   engine     le moteur tauri générique, livré en artefact **portable**
+ *              (`exe-zip`, `app-tar-gz`, `appimage`) : il n'est jamais installé
+ *              par un installeur d'OS, c'est le bootstrap qui le pose et qui le
+ *              remplace quand le SHA-256 du manifeste ne correspond plus.
  *
  * Aucun artefact n'est spécifique à un client : ni ici, ni dans les octets
  * stockés. L'identité vient du pack client, servi à part par le panel.
@@ -39,19 +39,16 @@ import { basename } from 'node:path'
 
 const BUILD_KEY_HEADER = 'X-Launcher-Build-Key'
 
-/** Les `.sig` accompagnent un artefact, ils n'en sont pas un. */
-const SIGNATURE_SUFFIX = '.sig'
-
 /**
  * Formats publiables, par rôle (contrat §5).
  *
- * Cette table est un **filtre**, pas seulement une nomenclature : `tauri build`
- * produit toujours l'installeur NSIS à côté du paquet de mise à jour, et lui
- * n'a plus rien à faire sur le panel — c'est le bootstrap qui installe. Tout ce
- * qui n'est pas listé ici est écarté avant le téléversement.
+ * Cette table est un **filtre**, pas seulement une nomenclature : un build peut
+ * laisser d'autres fichiers à côté de l'artefact attendu, et rien de ce qui
+ * n'est pas listé ici ne doit partir vers le panel.
  *
- * Les suffixes sont testés dans l'ordre : `.nsis.zip` doit gagner sur `.zip` et
- * `.app.tar.gz` sur `.tar.gz`.
+ * Les suffixes sont testés dans l'ordre, du plus spécifique au plus général :
+ * `.app.tar.gz` doit gagner sur `.tar.gz`, et `.zip` passe en dernier pour ne
+ * jamais rafler un nom que les entrées précédentes reconnaissent déjà.
  */
 const FORMATS = {
     bootstrap: [
@@ -59,19 +56,11 @@ const FORMATS = {
         ['.bin', 'bin'],
     ],
     engine: [
-        ['.nsis.zip', 'nsis-zip'],
         ['.app.tar.gz', 'app-tar-gz'],
         ['.appimage', 'appimage'],
+        ['.zip', 'exe-zip'],
     ],
 }
-
-/**
- * Seuls les paquets du moteur sont vérifiés par `tauri-plugin-updater`, donc
- * seuls eux ont besoin d'une signature minisign. Un bootstrap n'est pas un
- * artefact de mise à jour : il est téléchargé par le navigateur du joueur, et
- * ses octets changent de toute façon au téléchargement (overlay du tenant).
- */
-const SIGNED_ROLES = new Set(['engine'])
 
 function env(name, { required = true } = {}) {
     const value = process.env[name]?.trim()
@@ -99,7 +88,7 @@ function panelBase() {
  *
  * `body` est envoyé en JSON ; `raw` envoie des octets tels quels (les parts du
  * téléversement). Le corps d'erreur est remonté tel quel : le panel renvoie un
- * code machine (`already_published`, `missing_signature`…) et le voir dans les
+ * code machine (`already_published`, `missing_upload`…) et le voir dans les
  * logs de la CI évite d'avoir à deviner ce qui a été refusé.
  */
 async function callPanel(path, { method = 'POST', body, raw } = {}) {
@@ -150,21 +139,15 @@ function formatOf(filename, role) {
 }
 
 /**
- * Trie les chemins produits par le build : ce qui part, ce qui accompagne, ce
- * qui est écarté.
+ * Trie les chemins produits par le build : ce qui part, ce qui est écarté.
  *
- * Le build renvoie un tableau à plat où les `.sig` côtoient les bundles ; le
- * panel, lui, attend la signature *avec* l'artefact qu'elle signe, parce que
- * c'est ce couple qui rend une entrée de mise à jour valide.
- *
- * Les répertoires sont écartés : sous macOS la liste contient le bundle `.app`
- * lui-même, qui est une arborescence et non un fichier. Ce n'est pas un oubli
- * qu'il ne soit pas téléversé — c'est le `.app.tar.gz` voisin qui porte le même
- * contenu sous forme de fichier, et c'est lui que le bootstrap déballe pour
- * fabriquer le `.app` du tenant sur la machine du joueur.
+ * Les répertoires sont écartés : sous macOS la liste peut contenir le bundle
+ * `.app` lui-même, qui est une arborescence et non un fichier. Ce n'est pas un
+ * oubli qu'il ne soit pas téléversé — c'est le `.app.tar.gz` voisin qui porte
+ * le même contenu sous forme de fichier, et c'est lui que le bootstrap déballe
+ * pour fabriquer le `.app` du tenant sur la machine du joueur.
  */
 async function collectArtifacts(paths, role) {
-    const signatures = new Map()
     const artifacts = []
 
     for (const path of paths) {
@@ -177,10 +160,6 @@ async function collectArtifacts(paths, role) {
             console.log(`  – ${basename(path)} ignoré (répertoire)`)
             continue
         }
-        if (path.endsWith(SIGNATURE_SUFFIX)) {
-            signatures.set(path.slice(0, -SIGNATURE_SUFFIX.length), path)
-            continue
-        }
         const format = formatOf(basename(path), role)
         if (!format) {
             console.log(`  – ${basename(path)} ignoré (hors périmètre ${role})`)
@@ -189,11 +168,7 @@ async function collectArtifacts(paths, role) {
         artifacts.push({ path, format })
     }
 
-    return artifacts.map(({ path, format }) => ({
-        path,
-        format,
-        signaturePath: SIGNED_ROLES.has(role) ? (signatures.get(path) ?? null) : null,
-    }))
+    return artifacts
 }
 
 async function commandOpen() {
@@ -272,10 +247,9 @@ async function uploadOne(version, artifact, { role, target, arch }) {
     const stats = await stat(artifact.path)
     const filename = basename(artifact.path)
     if (stats.size === 0) fail(`artefact vide : ${filename}`)
-    const signature = artifact.signaturePath ? (await readFile(artifact.signaturePath, 'utf8')).trim() : null
 
     const registered = await callPanel(`/api/launcher/build/release/${encodeURIComponent(version)}/artifact`, {
-        body: { filename, target, arch, size: stats.size, signature },
+        body: { filename, target, arch, size: stats.size },
     })
 
     // Le panel déduit rôle et format du nom de fichier : s'il ne range pas
@@ -326,8 +300,7 @@ async function uploadOne(version, artifact, { role, target, arch }) {
         body: { uploadId, parts, sha256: digest.digest('hex') },
     })
 
-    const signed = signature ? 'signé' : 'non signé'
-    console.log(`  ✓ ${filename} — ${role}/${artifact.format}, ${(stats.size / 1024 / 1024).toFixed(1)} Mio, ${signed}`)
+    console.log(`  ✓ ${filename} — ${role}/${artifact.format}, ${(stats.size / 1024 / 1024).toFixed(1)} Mio`)
 }
 
 async function commandUpload() {
@@ -351,19 +324,6 @@ async function commandUpload() {
 
     const artifacts = await collectArtifacts(paths, role)
     if (artifacts.length === 0) fail(`aucun artefact ${role} pour ${target}/${arch}`)
-
-    // La signature manquante est détectée **avant** de téléverser : le panel
-    // refuserait de publier de toute façon, mais après plusieurs centaines de
-    // Mio envoyées pour rien.
-    if (SIGNED_ROLES.has(role)) {
-        const unsigned = artifacts.filter((artifact) => !artifact.signaturePath)
-        if (unsigned.length > 0) {
-            fail(
-                `signature minisign absente pour ${unsigned.map((a) => basename(a.path)).join(', ')} :` +
-                    ' TAURI_SIGNING_PRIVATE_KEY est-il configuré ?',
-            )
-        }
-    }
 
     console.log(`${artifacts.length} artefact(s) ${role} pour ${target}/${arch} :`)
 

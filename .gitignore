@@ -26,6 +26,6 @@ data
 *.sln
 *.sw?
 
-# Updater signing keys never belong in the repository
+# Aucune clé privée ne doit finir dans le dépôt, quelle qu'en soit l'origine
 *.key
 *.key.pub

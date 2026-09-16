@@ -27,8 +27,6 @@ import type {
   SkinData,
   SkinVariant,
   SystemInfo,
-  UpdateCheck,
-  UpdateEvent,
 } from "./types";
 
 export function isAppError(value: unknown): value is AppError {
@@ -144,13 +142,7 @@ export const ipc = {
   gameBusy: () => call<boolean>("game_busy"),
   gameKill: () => call<void>("game_kill"),
 
-  // ── Status & updates
+  // ── Status
   serverStatus: (host: string, port: number | null) =>
     call<ServerStatus>("server_status", { host, port }),
-  updateCheck: () => call<UpdateCheck>("update_check"),
-  updateInstall: (onEvent: (event: UpdateEvent) => void) => {
-    const channel = new Channel<UpdateEvent>();
-    channel.onmessage = onEvent;
-    return call<void>("update_install", { onEvent: channel });
-  },
 };

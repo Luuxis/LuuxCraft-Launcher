@@ -6,15 +6,15 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { describeError, t } from "../../i18n";
-import { formatBytes, formatMemory, formatPercent } from "../../lib/format";
+import { formatMemory } from "../../lib/format";
 import { ipc, toAppError } from "../../lib/ipc";
 import type { JavaInstall, JavaRequirement, Settings } from "../../lib/types";
-import { useActions, useAppState, useBrand, useInstances, useUpdaterConfigured } from "../../store/AppStore";
+import { useActions, useAppState, useBrand, useInstances } from "../../store/AppStore";
 import { Button, IconButton } from "../../components/ui/Button";
 import { Field, Input, OptionCard, Select, Slider, Textarea, Toggle } from "../../components/ui/forms";
 import { Icon } from "../../components/ui/Icon";
 import { ConfirmDialog } from "../../components/ui/Modal";
-import { Badge, Card, IconChip, KeyValue, Notice, ProgressBar, SectionHeader } from "../../components/ui/primitives";
+import { Badge, Card, IconChip, KeyValue, Notice, SectionHeader } from "../../components/ui/primitives";
 
 const SAVE_DELAY = 400;
 
@@ -77,12 +77,11 @@ function Section({ id, icon, title, children, tone }: { id: string; icon: string
 }
 
 export function SettingsView() {
-  const { bootstrap, update: updateCheckResult, updateInstalling, updateProgress } = useAppState();
-  const { resetSettings, openFolder, checkUpdate, installUpdate, openExternal } = useActions();
+  const { bootstrap } = useAppState();
+  const { resetSettings, openFolder, openExternal } = useActions();
   const { selected } = useInstances();
   const { draft, update, saving } = useSettingsEditor();
   const brand = useBrand();
-  const updaterConfigured = useUpdaterConfigured();
   const [confirmReset, setConfirmReset] = useState(false);
   const [gameRoot, setGameRoot] = useState(bootstrap?.paths.gameRoot ?? "");
 
@@ -91,7 +90,6 @@ export function SettingsView() {
   const [probe, setProbe] = useState<JavaInstall | null>(null);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [required, setRequired] = useState<JavaRequirement | null>(null);
-  const [checking, setChecking] = useState(false);
   // The custom Java choice is local until the executable has been probed
   // successfully: only then is `java.mode = custom` persisted.
   const [customJavaUi, setCustomJavaUi] = useState(false);
@@ -192,12 +190,6 @@ export function SettingsView() {
   const browseInstall = async () => {
     const picked = await openDialog({ multiple: false, directory: true, title: t("settings.install.path"), defaultPath: gameRoot || undefined });
     if (typeof picked === "string") update({ installPath: picked });
-  };
-
-  const runUpdateCheck = async () => {
-    setChecking(true);
-    await checkUpdate();
-    setChecking(false);
   };
 
   const javaIncompatible = probe && required && probe.major !== required.major;
@@ -446,53 +438,6 @@ export function SettingsView() {
           <Field label={t("settings.interface.statusRefresh")} icon="schedule">
             <Slider value={draft.serverStatusRefreshSeconds} min={10} max={300} step={5} format={(v) => t("settings.interface.seconds", { value: v })} onChange={(v) => update({ serverStatusRefreshSeconds: v })} />
           </Field>
-        </Section>
-
-        {/* Mises à jour */}
-        <Section id="updates" icon="system_update" title={t("settings.sections.updates")}>
-          {!updaterConfigured ? (
-            <Notice tone="info">{t("settings.updates.notConfigured")}</Notice>
-          ) : (
-            <>
-              <Toggle checked={draft.checkUpdatesOnStartup} onChange={(v) => update({ checkUpdatesOnStartup: v })} label={t("settings.updates.auto")} />
-              <div className="flex items-center gap-3 flex-wrap">
-                <Button variant="secondary" icon="refresh" loading={checking} onClick={() => void runUpdateCheck()}>
-                  {t("settings.updates.check")}
-                </Button>
-                {updateCheckResult?.update ? (
-                  <Button variant="primary" icon="download" loading={updateInstalling} onClick={() => void installUpdate()}>
-                    {t("settings.updates.install")}
-                  </Button>
-                ) : null}
-                {updateCheckResult && !updateCheckResult.update ? (
-                  <span className="text-xs inline-flex items-center gap-1.5" style={{ color: "#6ee7b7" }}>
-                    <Icon name="check_circle" size={14} /> {t("settings.updates.upToDate", { version: bootstrap.system.launcherVersion })}
-                  </span>
-                ) : null}
-              </div>
-              {updateCheckResult?.update ? (
-                <div className="card-inset p-4 space-y-2">
-                  <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                    {t("settings.updates.available", { version: updateCheckResult.update.version })}
-                  </p>
-                  {updateCheckResult.update.body ? (
-                    <p className="text-xs whitespace-pre-wrap selectable" style={{ color: "var(--text-body)" }}>
-                      {updateCheckResult.update.body}
-                    </p>
-                  ) : null}
-                  {updateProgress ? (
-                    <div className="space-y-1">
-                      <ProgressBar value={updateProgress.total ? formatPercent(updateProgress.downloaded, updateProgress.total) : 0} indeterminate={!updateProgress.total} />
-                      <p className="text-[11px] font-mono" style={{ color: "var(--text-meta)" }}>
-                        {formatBytes(updateProgress.downloaded)}
-                        {updateProgress.total ? ` / ${formatBytes(updateProgress.total)}` : ""}
-                      </p>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </>
-          )}
         </Section>
 
         {/* Logs */}

@@ -10,7 +10,6 @@ import { LoginModal } from "../features/accounts/LoginModal";
 import { HomeView } from "../features/home/HomeView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { SkinsView } from "../features/skins/SkinsView";
-import { UpdateBanner } from "../features/updater/UpdateBanner";
 import type { View } from "../store/AppStore";
 
 /** Views laid out to the window height instead of scrolling with the page. */
@@ -75,7 +74,6 @@ export function App() {
   return (
     <div className="launcher-bg h-full flex flex-col">
       <TitleBar />
-      <UpdateBanner />
       {maintenance ? (
         <div className="banner-error px-4 sm:px-6 py-2 flex items-center gap-3 text-sm shrink-0" role="alert">
           <Icon name="engineering" size={18} />

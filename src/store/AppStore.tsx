@@ -29,7 +29,6 @@ import type {
   RemoteSnapshot,
   RunningGame,
   Settings,
-  UpdateCheck,
 } from "../lib/types";
 
 export type View = "home" | "accounts" | "skins" | "settings";
@@ -75,10 +74,6 @@ export interface State {
   game: GameState;
   view: View;
   toasts: Toast[];
-  update: UpdateCheck | null;
-  updateProgress: { downloaded: number; total: number | null } | null;
-  updateInstalling: boolean;
-  updateDismissed: boolean;
   loginOpen: boolean;
 }
 
@@ -113,10 +108,6 @@ const initialState: State = {
   game: initialGame,
   view: "home",
   toasts: [],
-  update: null,
-  updateProgress: null,
-  updateInstalling: false,
-  updateDismissed: false,
   loginOpen: false,
 };
 
@@ -138,10 +129,6 @@ type Action =
   | { type: "view"; view: View }
   | { type: "toast/add"; toast: Toast }
   | { type: "toast/remove"; id: number }
-  | { type: "update/result"; update: UpdateCheck }
-  | { type: "update/progress"; progress: { downloaded: number; total: number | null } | null }
-  | { type: "update/installing"; installing: boolean }
-  | { type: "update/dismiss" }
   | { type: "login/open"; open: boolean };
 
 function appendLogs(logs: LogLine[], lines: LogLine[]): LogLine[] {
@@ -296,14 +283,6 @@ function reducer(state: State, action: Action): State {
       return { ...state, toasts: [...state.toasts.slice(-3), action.toast] };
     case "toast/remove":
       return { ...state, toasts: state.toasts.filter((toast) => toast.id !== action.id) };
-    case "update/result":
-      return { ...state, update: action.update };
-    case "update/progress":
-      return { ...state, updateProgress: action.progress };
-    case "update/installing":
-      return { ...state, updateInstalling: action.installing };
-    case "update/dismiss":
-      return { ...state, updateDismissed: true };
     case "login/open":
       return { ...state, loginOpen: action.open };
     default:
@@ -331,9 +310,6 @@ export interface Actions {
   toast: (kind: Toast["kind"], title: string, message?: string) => void;
   toastError: (error: unknown, title?: string) => void;
   dismissToast: (id: number) => void;
-  checkUpdate: () => Promise<UpdateCheck | null>;
-  installUpdate: () => Promise<void>;
-  dismissUpdate: () => void;
   openLogin: (open: boolean) => void;
   openExternal: (url: string) => Promise<void>;
   openFolder: (target: string) => Promise<void>;
@@ -572,41 +548,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const dismissToast = useCallback((id: number) => dispatch({ type: "toast/remove", id }), []);
   const openLogin = useCallback((open: boolean) => dispatch({ type: "login/open", open }), []);
 
-  const checkUpdate = useCallback(async () => {
-    try {
-      const update = await ipc.updateCheck();
-      dispatch({ type: "update/result", update });
-      return update;
-    } catch (error) {
-      logger.warn(`update check failed: ${toAppError(error).message}`);
-      toastError(error);
-      return null;
-    }
-  }, [toastError]);
-
-  const installUpdate = useCallback(async () => {
-    dispatch({ type: "update/installing", installing: true });
-    dispatch({ type: "update/progress", progress: { downloaded: 0, total: null } });
-    try {
-      await ipc.updateInstall((event) => {
-        if (event.event === "started") {
-          dispatch({ type: "update/progress", progress: { downloaded: 0, total: event.data.contentLength } });
-        } else if (event.event === "progress") {
-          dispatch({
-            type: "update/progress",
-            progress: { downloaded: event.data.downloaded, total: event.data.contentLength },
-          });
-        }
-      });
-    } catch (error) {
-      dispatch({ type: "update/installing", installing: false });
-      dispatch({ type: "update/progress", progress: null });
-      toastError(error);
-    }
-  }, [toastError]);
-
-  const dismissUpdate = useCallback(() => dispatch({ type: "update/dismiss" }), []);
-
   const openExternal = useCallback(
     async (url: string) => {
       try {
@@ -643,13 +584,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await refreshRemote(true);
         const running = await ipc.gameRunning().catch(() => null);
         if (running) dispatch({ type: "game/running", running });
-        if (bootstrap.settings.checkUpdatesOnStartup && updaterConfigured(stateRef.current)) {
-          try {
-            dispatch({ type: "update/result", update: await ipc.updateCheck() });
-          } catch (error) {
-            logger.warn(`startup update check failed: ${toAppError(error).message}`);
-          }
-        }
       } catch (error) {
         if (!cancelled) dispatch({ type: "boot/fatal", error: toAppError(error) });
       }
@@ -711,9 +645,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       toastError,
       dismissToast,
-      checkUpdate,
-      installUpdate,
-      dismissUpdate,
       openLogin,
       openExternal,
       openFolder,
@@ -738,9 +669,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       toastError,
       dismissToast,
-      checkUpdate,
-      installUpdate,
-      dismissUpdate,
       openLogin,
       openExternal,
       openFolder,
@@ -786,23 +714,11 @@ export function useInstances(): { instances: Instance[]; hidden: number; selecte
   }, [remote, account?.name, settings?.selectedInstance]);
 }
 
-/** Auto-update needs at least one endpoint, from the panel or built in. */
-function updaterConfigured(state: State): boolean {
-  return (
-    (state.remote?.config.updaterEndpoints.length ?? 0) > 0 ||
-    (state.bootstrap?.config.updater.endpoints.length ?? 0) > 0
-  );
-}
-
 /** The launcher identity: the panel's if it publishes one, built-in otherwise. */
 export function useBrand(): Brand {
   const { remote } = useAppState();
   const remoteBrand = remote?.config.brand ?? null;
   return useMemo(() => resolveBrand(remoteBrand), [remoteBrand]);
-}
-
-export function useUpdaterConfigured(): boolean {
-  return updaterConfigured(useAppState());
 }
 
 /** Module toggles published by the panel; unknown modules are shown. */
