@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "tauri dev -- -- --tenant-id=99549794-cbf3-4ad6-b514-4b213e9949da --api-url=https://staging.luuxcraft.fr/api",
+    "start:dev": "LUUXCRAFT_TENANT_ID=bb8f5247-1d38-41bb-ab6d-3200471a06b2 LUUXCRAFT_PANEL_URL=http://localhost:8080/api tauri dev",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

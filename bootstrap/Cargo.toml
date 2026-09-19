@@ -31,6 +31,29 @@ dirs = "5"
 # ferait qu'alourdir un binaire que le joueur télécharge en premier.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# L'interface est du Win32 natif : une fenêtre, quelques contrôles standard,
+# GDI+ pour afficher le logo. `windows-sys` n'est que des déclarations — seules
+# les fonctions appelées entrent dans le binaire, qui reste minuscule.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Ne sert qu'au script de build, pour tirer l'icône de l'exécutable de
+# `logo/logo.png` : décodage du PNG et mise à l'échelle. Rien de tout cela
+# n'entre dans le binaire.
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

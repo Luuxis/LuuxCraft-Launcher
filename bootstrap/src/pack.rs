@@ -18,6 +18,7 @@ use crate::hashing;
 use crate::manifest::Manifest;
 use crate::net::Http;
 use crate::paths::{self, Layout};
+use crate::report::Report;
 
 pub struct Pack {
     /// Seuls les raccourcis Windows y puisent (l'icône `.ico`), d'où le
@@ -39,7 +40,12 @@ impl Pack {
     }
 }
 
-pub fn ensure(http: &Http, layout: &Layout, manifest: &Manifest) -> Result<Pack> {
+pub fn ensure(
+    http: &Http,
+    layout: &Layout,
+    manifest: &Manifest,
+    report: &dyn Report,
+) -> Result<Pack> {
     paths::create_dir(&layout.client_dir)?;
 
     let mut updated = 0;
@@ -62,7 +68,7 @@ pub fn ensure(http: &Http, layout: &Layout, manifest: &Manifest) -> Result<Pack>
         }
 
         let staged = layout.tmp(&format!("pack-{index}"));
-        let hash = http.download(&file.url, &staged, file.size, &file.path)?;
+        let hash = http.download(&file.url, &staged, file.size, &file.path, report)?;
         if !hashing::matches(&hash, &file.sha256) {
             return Err(BootstrapError::new(format!(
                 "le fichier « {} » est arrivé corrompu (empreinte incorrecte).",

@@ -1,4 +1,4 @@
-//! Accès HTTP et affichage de la progression.
+//! Accès HTTP et suivi de la progression.
 //!
 //! Un seul agent est partagé : la connexion TLS ouverte pour le manifeste sert
 //! ensuite aux téléchargements, ce qui évite une poignée de main par fichier du
@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::config::USER_AGENT;
 use crate::error::{self, BootstrapError, Result};
 use crate::hashing;
+use crate::report::Report;
 
 pub struct Http {
     agent: ureq::Agent,
@@ -45,6 +46,33 @@ impl Http {
         })
     }
 
+    /// Lit une réponse en mémoire, bornée : au-delà de `limit` octets, c'est
+    /// une erreur, pas une allocation sans fin. Seule la fenêtre s'en sert,
+    /// pour le logo du serveur.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn get_bytes(&self, url: &str, limit: u64) -> Result<Vec<u8>> {
+        let response = self
+            .agent
+            .get(url)
+            .call()
+            .map_err(|failure| error::from_http(url, failure))?;
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|failure| {
+                BootstrapError::new(format!("le téléchargement a été interrompu ({failure})."))
+                    .hint("Vérifiez votre connexion internet puis relancez l'installation.")
+            })?;
+        if bytes.len() as u64 > limit {
+            return Err(BootstrapError::new(format!(
+                "réponse trop volumineuse du panel (plus de {limit} octets).\n{url}"
+            )));
+        }
+        Ok(bytes)
+    }
+
     /// Télécharge vers `destination` en calculant l'empreinte au passage, et
     /// rend l'empreinte obtenue.
     ///
@@ -58,6 +86,7 @@ impl Http {
         destination: &Path,
         expected_size: u64,
         label: &str,
+        report: &dyn Report,
     ) -> Result<String> {
         let response = self
             .agent
@@ -85,29 +114,31 @@ impl Http {
             file.write_all(&buffer[..read])
                 .map_err(|error| BootstrapError::io("L'écriture", destination, &error))?;
             written += read as u64;
-            progress.tick(written);
+            progress.tick(written, report);
         }
 
         // Sans `sync_all`, le renommage qui suit pourrait publier un fichier
         // dont le contenu n'a pas encore atteint le disque.
         file.sync_all()
             .map_err(|error| BootstrapError::io("L'écriture", destination, &error))?;
-        progress.finish(written);
+        progress.finish(written, report);
 
         Ok(hashing::to_hex(&hasher.finalize()[..]))
     }
 }
 
-/// Barre de progression sur une seule ligne, réécrite en place.
+/// Cadence des comptes rendus d'un téléchargement.
+///
+/// Rapporter chaque bloc de 64 Ko saturerait un terminal lent comme la file
+/// de messages d'une fenêtre : un compte rendu par pour cent, ou tous les
+/// quarts de seconde.
 struct Progress {
     label: String,
     total: u64,
     last_percent: u64,
-    last_draw: Instant,
-    drawn: bool,
+    last_report: Instant,
+    reported: bool,
 }
-
-const MEGABYTE: f64 = 1024.0 * 1024.0;
 
 impl Progress {
     fn new(label: &str, total: u64) -> Self {
@@ -115,49 +146,34 @@ impl Progress {
             label: label.to_owned(),
             total,
             last_percent: u64::MAX,
-            last_draw: Instant::now(),
-            drawn: false,
+            last_report: Instant::now(),
+            reported: false,
         }
     }
 
-    fn tick(&mut self, done: u64) {
-        let percent = if self.total > 0 {
-            (done.saturating_mul(100) / self.total).min(100)
-        } else {
-            0
-        };
-        // Redessiner à chaque bloc de 64 Ko saturerait un terminal lent.
+    fn tick(&mut self, done: u64, report: &dyn Report) {
+        let percent = done
+            .saturating_mul(100)
+            .checked_div(self.total)
+            .unwrap_or(0)
+            .min(100);
         let due = percent != self.last_percent
-            || self.last_draw.elapsed() >= Duration::from_millis(250);
+            || self.last_report.elapsed() >= Duration::from_millis(250);
         if !due {
             return;
         }
         self.last_percent = percent;
-        self.last_draw = Instant::now();
-        self.draw(done, percent);
+        self.last_report = Instant::now();
+        self.reported = true;
+        report.transfer(&self.label, done, self.total);
     }
 
-    fn draw(&mut self, done: u64, percent: u64) {
-        let done_mb = done as f64 / MEGABYTE;
-        if self.total > 0 {
-            print!(
-                "\r      {} {:>3} %  {:.1} / {:.1} Mo   ",
-                self.label,
-                percent,
-                done_mb,
-                self.total as f64 / MEGABYTE
-            );
-        } else {
-            print!("\r      {} {:.1} Mo   ", self.label, done_mb);
-        }
-        let _ = std::io::stdout().flush();
-        self.drawn = true;
-    }
-
-    fn finish(&mut self, done: u64) {
-        if self.drawn {
-            self.draw(done, 100);
-            println!();
+    /// Un dernier compte rendu à 100 %, puis la fin — seulement si quelque
+    /// chose a été rapporté : un fichier vide ne laisse aucune trace.
+    fn finish(&mut self, done: u64, report: &dyn Report) {
+        if self.reported {
+            report.transfer(&self.label, done, self.total.max(done));
+            report.transfer_done();
         }
     }
 }

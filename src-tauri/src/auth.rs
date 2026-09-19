@@ -10,11 +10,24 @@
 //! Azuriom goes through AZauth with its 2FA step, and offline/Yggdrasil
 //! accounts through `Yggdrasil`. The panel's `online` field decides which
 //! method is on. Sessions are then renewed automatically (see `sessions`).
+//!
+//! ## Un jeton de rafraîchissement appartient à son application Azure
+//!
+//! Microsoft n'accepte un `refresh_token` qu'avec le `client_id` qui l'a
+//! émis : un jeton obtenu sous l'application du panel est refusé sous celle du
+//! launcher officiel, et inversement (`invalid_grant`, « issued for a different
+//! client id »). Or l'application peut changer entre deux démarrages — le
+//! tenant en publie une nouvelle, ou n'en publie plus — sans que les sessions
+//! déjà rangées ne perdent rien de leur validité. Chaque compte retient donc
+//! l'identifiant sous lequel sa session a été obtenue (`Account::client_id`),
+//! et le renouvellement l'essaie **en premier**, avant celui du panel et celui
+//! du launcher officiel. Sans cela, changer d'application déconnectait tous les
+//! comptes sauf le dernier ajouté.
 
 use std::sync::Arc;
 
 use crust_core::authenticator::{Account, Authenticator, AzAuth, AzAuthLogin, Yggdrasil};
-use crust_core::providers::microsoft::{Authority, MicrosoftOAuth};
+use crust_core::providers::microsoft::{Authority, MicrosoftOAuth, DEFAULT_CLIENT_ID};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -58,19 +71,84 @@ pub struct AuthMethods {
 /// Authenticator for the login window: the panel client id on the Live
 /// authority (desktop redirect), or the official launcher client id.
 fn window_authenticator(state: &AppState, client_id: Option<&str>) -> AppResult<Authenticator> {
-    match client_id.map(str::trim).filter(|id| !id.is_empty()) {
-        Some(client_id) => Ok(Authenticator::with_oauth(
-            state.http.clone(),
-            MicrosoftOAuth::new(state.http.clone(), client_id, Authority::Live),
-        )),
-        None => Authenticator::new().map_err(AppError::from),
-    }
+    authenticator_for(state, client_id.unwrap_or(DEFAULT_CLIENT_ID))
 }
 
-/// Authenticator with the official launcher client id, used as a fallback for
-/// accounts created before the panel published its own application.
-fn official_authenticator() -> AppResult<Authenticator> {
-    Authenticator::new().map_err(AppError::from)
+/// Authenticator for one Azure application id. The official launcher id goes
+/// through `crust_core`'s own configuration; any other id is a panel
+/// application on the Live authority, like the login window.
+fn authenticator_for(state: &AppState, client_id: &str) -> AppResult<Authenticator> {
+    let client_id = client_id.trim();
+    if client_id.is_empty() || client_id == DEFAULT_CLIENT_ID {
+        return Authenticator::new().map_err(AppError::from);
+    }
+    Ok(Authenticator::with_oauth(
+        state.http.clone(),
+        MicrosoftOAuth::new(state.http.clone(), client_id, Authority::Live),
+    ))
+}
+
+/// The application ids a Microsoft session may have been issued under, most
+/// likely first: the one recorded on the account, the panel's current one,
+/// then the official launcher id. Without duplicates.
+fn refresh_client_ids(state: &AppState, account: &Account) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let candidates = [
+        account.client_id.clone(),
+        panel_client_id(state),
+        Some(DEFAULT_CLIENT_ID.to_owned()),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        let candidate = candidate.trim().to_owned();
+        if !candidate.is_empty() && !ids.contains(&candidate) {
+            ids.push(candidate);
+        }
+    }
+    ids
+}
+
+/// Renews a Microsoft session, trying each application id in turn.
+///
+/// Only an authentication refusal moves on to the next id: a network error
+/// says nothing about the session and is returned as is. When the refresh
+/// token was actually exercised, the id that worked is recorded on the
+/// account so the next renewal goes straight to it.
+async fn refresh_microsoft(
+    state: &AppState,
+    account: &Account,
+    client_ids: &[String],
+) -> AppResult<Account> {
+    let mut first_refusal: Option<AppError> = None;
+    for client_id in client_ids {
+        match authenticator_for(state, client_id)?.refresh(account).await {
+            Ok(mut fresh) => {
+                if fresh.access_token != account.access_token {
+                    if account.client_id.as_deref() != Some(client_id.as_str()) {
+                        log::info!(
+                            "session of {} renewed under client id {client_id}",
+                            account.name
+                        );
+                    }
+                    fresh.client_id = Some(client_id.clone());
+                }
+                return Ok(fresh);
+            }
+            Err(error) => {
+                let mapped = AppError::from(error);
+                if !matches!(mapped.code, "auth_expired" | "auth_denied") {
+                    return Err(mapped);
+                }
+                log::debug!(
+                    "session of {} refused under client id {client_id}: {mapped}",
+                    account.name
+                );
+                first_refusal.get_or_insert(mapped);
+            }
+        }
+    }
+    Err(first_refusal.unwrap_or_else(|| {
+        AppError::new("auth_expired", "no application id to renew the session with")
+    }))
 }
 
 async fn auth_methods(state: &AppState) -> AppResult<AuthMethods> {
@@ -201,7 +279,10 @@ pub async fn auth_microsoft_window_login(
         return Err(AppError::cancelled());
     };
     let _ = on_event.send(AuthEvent::Waiting);
-    let account = request.login(&auth, &redirect_url).await?;
+    let mut account = request.login(&auth, &redirect_url).await?;
+    // The refresh token is bound to this application: remember which one, so
+    // the session can still be renewed once the panel publishes another.
+    account.client_id = Some(auth.microsoft().oauth().client_id().to_owned());
     log::info!("microsoft sign-in complete for {}", account.name);
     store_and_select(&state, account)
 }
@@ -373,27 +454,18 @@ pub async fn ensure_fresh_account(state: &AppState, uuid: &str) -> AppResult<Acc
         .get(uuid)
         .ok_or_else(|| AppError::new("account_unknown", "unknown account"))?;
     let account = state.accounts.load_account(uuid)?;
-    let refreshed = match summary.kind {
+    let refreshed: AppResult<Account> = match summary.kind {
         AccountKind::Microsoft => {
-            // Refresh tokens are bound to the client id that issued them, and
-            // that id comes from the panel: without it, keep the stored
-            // session rather than risk a false "expired".
-            let Some(config) = panel_config(state) else {
+            // Refresh tokens are bound to the application that issued them.
+            // An account that does not remember its own only has the panel's
+            // to go on: without the panel, keep the stored session rather
+            // than risk a false "expired" under the official id.
+            if account.client_id.is_none() && panel_config(state).is_none() {
                 log::debug!("panel configuration unknown: keeping the stored Microsoft session");
                 return Ok(account);
-            };
-            let client_id = config
-                .client_id
-                .map(|id| id.trim().to_owned())
-                .filter(|id| !id.is_empty());
-            let mut result = window_authenticator(state, client_id.as_deref())?
-                .refresh(&account)
-                .await;
-            if result.is_err() && client_id.is_some() {
-                // Account created with the official launcher client id.
-                result = official_authenticator()?.refresh(&account).await;
             }
-            result
+            let client_ids = refresh_client_ids(state, &account);
+            refresh_microsoft(state, &account, &client_ids).await
         }
         AccountKind::AzAuth => {
             let site = match state.snapshot().map(|s| s.config.auth) {
@@ -404,7 +476,7 @@ pub async fn ensure_fresh_account(state: &AppState, uuid: &str) -> AppResult<Acc
                 }
             };
             let client = AzAuth::new(state.http.clone(), &site)?;
-            client.verify(&account).await
+            client.verify(&account).await.map_err(AppError::from)
         }
         AccountKind::Offline | AccountKind::Yggdrasil => return Ok(account),
     };
@@ -413,8 +485,7 @@ pub async fn ensure_fresh_account(state: &AppState, uuid: &str) -> AppResult<Acc
             state.accounts.upsert(fresh.clone())?;
             Ok(fresh)
         }
-        Err(error) => {
-            let mapped = AppError::from(error);
+        Err(mapped) => {
             // A network problem is not an expired session: keep the account usable.
             if matches!(mapped.code, "network" | "timeout" | "api_unavailable") {
                 log::warn!("session refresh postponed for {}: {mapped}", summary.name);

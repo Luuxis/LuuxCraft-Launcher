@@ -30,16 +30,22 @@ use crate::hashing;
 use crate::manifest::Manifest;
 use crate::net::Http;
 use crate::paths::{self, Layout};
+use crate::report::Report;
 use crate::unpack;
 
 /// Installe le moteur si nécessaire et rend le chemin de son exécutable.
-pub fn ensure(http: &Http, layout: &Layout, manifest: &Manifest) -> Result<PathBuf> {
+pub fn ensure(
+    http: &Http,
+    layout: &Layout,
+    manifest: &Manifest,
+    report: &dyn Report,
+) -> Result<PathBuf> {
     let wanted = &manifest.engine;
 
     if let Some(state) = read_state(&layout.engine_state()) {
         if state.version == wanted.version && hashing::matches(&state.sha256, &wanted.sha256) {
             if let Some(executable) = installed_executable(layout, &state) {
-                println!("      moteur {} déjà à jour", wanted.version);
+                report.detail(&format!("moteur {} déjà à jour", wanted.version));
                 return Ok(executable);
             }
         }
@@ -56,9 +62,9 @@ pub fn ensure(http: &Http, layout: &Layout, manifest: &Manifest) -> Result<PathB
         .hint("Retéléchargez l'installeur depuis le panel : celui-ci est trop ancien."));
     }
 
-    println!("      moteur {} à installer", wanted.version);
+    report.detail(&format!("moteur {} à installer", wanted.version));
     let archive = layout.tmp("engine-bundle");
-    let hash = http.download(&wanted.url, &archive, wanted.size, "moteur")?;
+    let hash = http.download(&wanted.url, &archive, wanted.size, "moteur", report)?;
     if !hashing::matches(&hash, &wanted.sha256) {
         return Err(corrupted());
     }

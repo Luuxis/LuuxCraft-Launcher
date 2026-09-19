@@ -82,6 +82,22 @@ pub struct WindowIdentity {
     pub icon: String,
 }
 
+/// Ce qu'un pack a le droit de contenir, selon d'où il vient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    /// Accepte un panel en `http://`. Réservé au pack de développement, que
+    /// `dev_pack` télécharge depuis un panel local (`wrangler dev`) : le
+    /// contrat exige https, et une installation ne le relâche jamais.
+    pub allow_http: bool,
+}
+
+impl Policy {
+    /// Le contrat : https, sans exception.
+    pub const INSTALLED: Self = Self { allow_http: false };
+    /// Le pack de `data/client/`, en debug uniquement.
+    pub const DEVELOPMENT: Self = Self { allow_http: true };
+}
+
 /// L'identité du tenant, lue une fois au démarrage et partagée en lecture seule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfig {
@@ -124,10 +140,20 @@ impl ClientConfig {
     ///
     /// En debug il n'y a pas d'installation : le pack est celui posé dans
     /// `data/client/` du dépôt, au même endroit que le reste des données de
-    /// développement (voir `config::Paths::resolve`).
+    /// développement (voir `config::Paths::resolve`). `--tenant-id` le fait
+    /// télécharger depuis le panel avant de le lire (voir `dev_pack`).
     pub fn resolve() -> Result<Self, String> {
         if cfg!(debug_assertions) {
-            return Self::read(&dev_pack_dir());
+            let dir = dev_pack_dir();
+            if let Some(request) = crate::dev_pack::Request::from_env()? {
+                request.install(&dir)?;
+            }
+            return Self::read_with(&dir, Policy::DEVELOPMENT).map_err(|error| {
+                format!(
+                    "{error}\nin development, pass {} to download the pack from the panel",
+                    crate::dev_pack::USAGE
+                )
+            });
         }
 
         let exe = installed_exe().ok_or_else(|| {
@@ -151,8 +177,13 @@ impl ClientConfig {
         ))
     }
 
-    /// Lit et valide `<dir>/client_config.json`.
+    /// Lit et valide `<dir>/client_config.json` selon le contrat.
     pub fn read(dir: &Path) -> Result<Self, String> {
+        Self::read_with(dir, Policy::INSTALLED)
+    }
+
+    /// Lit et valide `<dir>/client_config.json` selon `policy`.
+    pub fn read_with(dir: &Path, policy: Policy) -> Result<Self, String> {
         let path = dir.join(CLIENT_CONFIG_FILE);
         let length = std::fs::metadata(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?
@@ -165,12 +196,19 @@ impl ClientConfig {
         }
         let bytes = std::fs::read(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        Self::parse(&bytes, dir).map_err(|reason| format!("{}: {reason}", path.display()))
+        Self::parse_with(&bytes, dir, policy)
+            .map_err(|reason| format!("{}: {reason}", path.display()))
     }
 
-    /// Valide le contenu du fichier. Séparée de la lecture pour être testable
-    /// sans toucher au disque.
+    /// Valide le contenu du fichier selon le contrat. Séparée de la lecture
+    /// pour être testable sans toucher au disque.
+    #[cfg(test)]
     pub fn parse(bytes: &[u8], dir: &Path) -> Result<Self, String> {
+        Self::parse_with(bytes, dir, Policy::INSTALLED)
+    }
+
+    /// Valide le contenu du fichier selon `policy`.
+    pub fn parse_with(bytes: &[u8], dir: &Path, policy: Policy) -> Result<Self, String> {
         let raw: RawClientConfig =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         if raw.schema != SCHEMA {
@@ -216,7 +254,10 @@ impl ClientConfig {
         let api_base_url = raw.api_base_url.trim().trim_end_matches('/').to_owned();
         // L'exigence d'https est la seule protection réelle du pack, qui n'est
         // pas signé : elle empêche de détourner un moteur vers un panel en clair.
-        if !api_base_url.starts_with("https://") || api_base_url.len() <= "https://".len() {
+        // Seul le pack de développement peut désigner un panel local en http.
+        let secure = has_host(&api_base_url, "https://");
+        let plain = policy.allow_http && has_host(&api_base_url, "http://");
+        if !secure && !plain {
             return Err(format!("api_base_url must use https: {api_base_url}"));
         }
 
@@ -268,6 +309,12 @@ impl ClientConfig {
             dir: PathBuf::from("/tmp/luuxcraft-sample-client"),
         }
     }
+}
+
+/// `<scheme>` suivi d'au moins un caractère d'hôte.
+pub fn has_host(url: &str, scheme: &str) -> bool {
+    url.strip_prefix(scheme)
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
 }
 
 /// Un nom de fichier et rien d'autre : ni séparateur, ni remontée de dossier.
@@ -482,6 +529,24 @@ mod tests {
     #[test]
     fn plain_http_is_refused() {
         assert!(parse(&VALID.replace("https://panel", "http://panel")).is_err());
+    }
+
+    /// Le pack de développement vient d'un `wrangler dev` local, en clair :
+    /// c'est la seule politique qui l'accepte, et elle n'est jamais appliquée à
+    /// une installation.
+    #[test]
+    fn the_development_policy_accepts_a_local_panel_in_plain_http() {
+        let json = VALID.replace("https://panel.example/api", "http://localhost:8080/api");
+        let client = ClientConfig::parse_with(json.as_bytes(), Path::new("/tmp/dev"), Policy::DEVELOPMENT)
+            .expect("development pack");
+        assert_eq!(client.api_base_url, "http://localhost:8080/api");
+        assert!(parse(&json).is_err(), "the contract still refuses it");
+        assert!(ClientConfig::parse_with(
+            VALID.replace("https://panel.example/api", "http://").as_bytes(),
+            Path::new("/tmp/dev"),
+            Policy::DEVELOPMENT
+        )
+        .is_err());
     }
 
     #[test]

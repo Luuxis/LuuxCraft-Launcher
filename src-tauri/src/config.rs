@@ -308,15 +308,6 @@ impl Paths {
         Ok(())
     }
 
-    /// Fichier des comptes, jetons de session compris.
-    ///
-    /// Il suit le tenant, pas l'installation du jeu : deux serveurs peuvent
-    /// partager une racine de jeu — c'est même souhaitable, elle pèse des
-    /// gigaoctets — mais sûrement pas les sessions Minecraft du joueur.
-    pub fn accounts_file(&self) -> PathBuf {
-        self.launcher_dir.join(crate::accounts::ACCOUNTS_FILE)
-    }
-
     /// The Minecraft root (`versions/`, `libraries/`, `assets/`, `runtime/`,
     /// `instances/`). A user-chosen install path wins, then the debug pin,
     /// then `<platform data dir>/<dataDirectory>`.

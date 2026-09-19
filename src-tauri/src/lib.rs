@@ -25,6 +25,7 @@ mod commands;
 mod config;
 #[cfg(target_os = "linux")]
 mod desktop;
+mod dev_pack;
 mod error;
 mod game;
 mod instances;

@@ -227,11 +227,19 @@ impl AccountStore {
     }
 
     /// Stores (or replaces) an account.
-    pub fn upsert(&self, account: Account) -> AppResult<AccountSummary> {
+    ///
+    /// The application id that issued the session (`Account::client_id`) is
+    /// kept from the stored copy when the incoming one does not carry it: a
+    /// profile-only update must not make the account forget which application
+    /// its refresh token belongs to.
+    pub fn upsert(&self, mut account: Account) -> AppResult<AccountSummary> {
         let mut accounts = self.accounts.lock().expect("accounts mutex");
         let existing = accounts
             .iter()
             .position(|stored| stored.account.uuid == account.uuid);
+        if account.client_id.is_none() {
+            account.client_id = existing.and_then(|index| accounts[index].account.client_id.clone());
+        }
         let stored = StoredAccount {
             added_at: existing
                 .map(|index| accounts[index].added_at)
@@ -346,6 +354,31 @@ mod tests {
         assert_eq!(account["meta"]["type"], "Mojang");
         assert!(account["access_token"].is_string());
         assert!(account["addedAt"].is_number());
+    }
+
+    /// L'application Azure d'une session survit à une mise à jour du profil :
+    /// une copie sans `client_id` ne doit pas effacer celui déjà rangé.
+    #[test]
+    fn a_profile_update_keeps_the_issuing_client_id() {
+        let dir = temp_dir("client-id");
+        let store = AccountStore::open(dir);
+        let mut account = Yggdrasil::offline("Steve");
+        account.client_id = Some("panel-app".into());
+        store.upsert(account.clone()).unwrap();
+
+        account.client_id = None;
+        store.upsert(account.clone()).unwrap();
+        assert_eq!(
+            store.load_account(&account.uuid).unwrap().client_id.as_deref(),
+            Some("panel-app")
+        );
+
+        account.client_id = Some("other-app".into());
+        store.upsert(account.clone()).unwrap();
+        assert_eq!(
+            store.load_account(&account.uuid).unwrap().client_id.as_deref(),
+            Some("other-app")
+        );
     }
 
     /// Deux tenants ne partagent pas leurs sessions : chacun ouvre son propre

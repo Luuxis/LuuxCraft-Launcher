@@ -1,0 +1,10 @@
+{
+    "files.exclude": {
+        "**/.vscode": true,
+        "**/.vite": true,
+        "**/node_modules": true,
+        "**/target": true,
+        "**/dist": true,
+        "**/src-tauri/gen": true
+    }
+}

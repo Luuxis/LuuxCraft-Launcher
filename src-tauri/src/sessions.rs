@@ -97,8 +97,11 @@ fn differ(before: &[AccountSummary], after: &[AccountSummary]) -> bool {
 
 /// Whether an account should be renewed now.
 fn is_due(account: &AccountSummary, last_attempt: Option<u64>, now: u64) -> bool {
-    // An expired session needs a new sign-in: retrying cannot help.
-    if account.needs_reauth {
+    // A session marked as expired gets one more try per run, no more. The
+    // mark may date from a start where the application id that issued the
+    // session was not available (see `auth`): this start may have it. A
+    // session that is really gone fails again, silently, and is left alone.
+    if account.needs_reauth && last_attempt.is_some() {
         return false;
     }
     if let Some(last) = last_attempt {
@@ -180,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn renewals_are_throttled_and_skip_expired_sessions() {
+    fn renewals_are_throttled() {
         let soon = Some((NOW + 60) * 1000);
         let just_now = Some(NOW - 60);
         assert!(!is_due(
@@ -188,9 +191,27 @@ mod tests {
             just_now,
             NOW
         ));
-        assert!(!is_due(
+    }
+
+    /// Une session marquée expirée est retentée une fois par exécution — le
+    /// démarrage peut apporter l'application qui l'a émise — puis laissée
+    /// tranquille, quelle que soit son échéance.
+    #[test]
+    fn expired_sessions_get_one_try_per_run() {
+        let soon = Some((NOW + 60) * 1000);
+        assert!(is_due(
             &account(AccountKind::Microsoft, soon, true),
             None,
+            NOW
+        ));
+        assert!(!is_due(
+            &account(AccountKind::Microsoft, soon, true),
+            Some(NOW - 24 * 3600),
+            NOW
+        ));
+        assert!(!is_due(
+            &account(AccountKind::AzAuth, None, true),
+            Some(NOW - 24 * 3600),
             NOW
         ));
     }

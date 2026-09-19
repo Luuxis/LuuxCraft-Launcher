@@ -186,6 +186,36 @@ npm run tauri dev
 En debug, tout va dans `data/` à la racine du dépôt (`data/launcher`, `data/minecraft`,
 `data/logs`, `data/cache`) ; en release, dans les dossiers standards de l'OS, scopés au tenant.
 
+Le pack client est attendu dans `data/client/`. Plutôt que de l'y écrire à la main, le moteur
+peut le télécharger depuis le panel — par la route que l'installeur utilise — avec l'identifiant
+du tenant (`users.id`). C'est l'UUID qui figure dans la commande d'installation affichée par le
+dashboard (onglet Téléchargement du launcher), **pas** le code d'appairage `xxx-xxx-xxx` : le
+panel refuse ce dernier sur ses routes de distribution. Les scripts de `package.json` portent le
+panel et le tenant de chaque environnement :
+
+```bash
+npm start            # staging  (https://staging.luuxcraft.fr)
+npm run start:dev    # wrangler dev local (http://localhost:8080)
+```
+
+Les mêmes informations se passent aussi à la main :
+
+```bash
+npm run tauri dev -- -- -- --tenant-id=<users.id>                                     # panel de production
+npm run tauri dev -- -- -- --tenant-id=<users.id> --api-url=http://localhost:8080     # autre panel
+LUUXCRAFT_TENANT_ID=<users.id> LUUXCRAFT_PANEL_URL=… npm run tauri dev             # par l'environnement
+```
+
+Trois `--` : le premier pour npm, le deuxième pour la CLI tauri, le troisième pour que ce qui
+suit aille au binaire et non à `cargo run` (les scripts de `package.json` n'ont que les deux
+derniers). Le pack téléchargé reste dans
+`data/client/` : les lancements suivants le relisent sans argument, jusqu'à ce qu'on le redonne
+(pour rafraîchir, ou changer de tenant). Un panel local en `http://` est accepté **en debug
+seulement** : le pack qu'il sert porte une `api_base_url` en clair, que le contrat refuse et
+que seule la politique de développement (`client_config::Policy::DEVELOPMENT`) laisse passer.
+Le flag ne s'appelle pas `--client-id` parce que `client_id` désigne déjà l'application Azure
+et le code d'appairage — voir `src-tauri/src/dev_pack.rs`.
+
 Tests :
 
 ```bash
@@ -226,7 +256,16 @@ Le flux *device code* n'est pas proposé : l'application Azure du panel le refus
 Les renouvellements sont sérialisés (Microsoft fait tourner les *refresh tokens*) et la liste des
 comptes est repoussée à l'interface par l'événement `accounts://changed`. Si le panel est
 injoignable, la session stockée est conservée telle quelle au lieu d'être déclarée expirée ; un
-compte réellement expiré est marqué « reconnexion requise ».
+compte réellement expiré est marqué « reconnexion requise », puis retenté une seule fois à
+chaque démarrage.
+
+Un *refresh token* Microsoft n'est accepté qu'avec le `client_id` Azure qui l'a émis. Chaque
+compte retient donc l'application sous laquelle sa session a été obtenue (`clientId` dans
+`accounts.json`), et le renouvellement l'essaie en premier, avant l'application publiée par le
+panel puis celle du launcher officiel. Changer d'application côté panel — ou de panel en
+développement — ne déconnecte donc plus les comptes existants. Les comptes rangés avant cette
+mécanique n'ont pas de `clientId` : ils sont retentés sous l'application courante à chaque
+démarrage, et le premier renouvellement réussi l'enregistre.
 
 ## Mises à jour automatiques
 
