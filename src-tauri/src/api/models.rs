@@ -28,8 +28,54 @@ pub struct RemoteConfig {
     /// Yggdrasil-compatible server (authlib-injector style) enabling that
     /// extra sign-in method.
     pub yggdrasil: Option<String>,
+    /// Couleur d'accentuation du client, en hexadécimal.
+    ///
+    /// Doublon assumé avec le thème : un premier démarrage, ou un panel lent à
+    /// répondre sur `/theme`, doit tout de même ouvrir le launcher aux
+    /// couleurs du client plutôt qu'à celles du moteur.
+    pub accent_color: Option<String>,
     /// Every field the launcher does not model, for future panel features.
     pub extra: Map<String, Value>,
+}
+
+/// `GET /theme` : habillage complet du launcher.
+///
+/// `document` reste un `Value` opaque. Son schéma est défini côté panel et son
+/// rendu côté interface ; en donner une traduction Rust imposerait d'en tenir
+/// une troisième copie, qui dériverait dès le premier type de calque ajouté.
+/// Le moteur ne fait que transporter — et met en cache, ce qui permet au
+/// launcher de s'ouvrir habillé même hors ligne.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTheme {
+    pub schema_version: u32,
+    /// Mise en page composée par le propriétaire, ou `None` : dans ce cas le
+    /// launcher garde sa disposition intégrée.
+    pub document: Option<Value>,
+    /// Variables CSS à poser sur `:root`, calculées par le panel.
+    pub variables: Map<String, Value>,
+}
+
+impl RemoteTheme {
+    /// Lecture tolérante : une réponse inattendue donne un thème vide, jamais
+    /// une erreur. Un thème illisible ne doit pas empêcher de jouer.
+    pub fn from_value(value: Value) -> Self {
+        let Some(object) = value.as_object() else {
+            return Self::default();
+        };
+        Self {
+            schema_version: object
+                .get("schemaVersion")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            document: object.get("document").filter(|v| v.is_object()).cloned(),
+            variables: object
+                .get("variables")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
 }
 
 /// Launcher identity: `LuuxCraft` in the title bar is `prefix` + `suffix`,
@@ -255,6 +301,8 @@ impl RemoteConfig {
         "yggdrasil",
         "yggdrasilServer",
         "yggdrasil_server",
+        "accentColor",
+        "accent_color",
     ];
 
     pub fn from_value(value: Value) -> Result<Self, String> {
@@ -302,6 +350,15 @@ impl RemoteConfig {
                 &["yggdrasil", "yggdrasilServer", "yggdrasil_server"],
             )
             .filter(|url| url.starts_with("https://") || url.starts_with("http://")),
+            accent_color: pick_string(object, &["accentColor", "accent_color"])
+                // Filtré ici plutôt qu'au rendu : cette valeur finit dans une
+                // déclaration CSS, et le panel n'est pas le seul chemin par
+                // lequel une réponse peut arriver jusqu'au launcher.
+                .filter(|hex| {
+                    hex.len() == 7
+                        && hex.starts_with('#')
+                        && hex[1..].chars().all(|c| c.is_ascii_hexdigit())
+                }),
             extra: remaining(object, Self::KNOWN),
         })
     }

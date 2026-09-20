@@ -23,7 +23,6 @@ export function PlayCard() {
   const status = selected ? statuses[selected.id] : undefined;
   const busy = game.mode !== "idle";
   const running = game.running;
-  const runningHere = running && selected && running.instanceId === selected.id;
 
   const canPlay = Boolean(account && selected && !busy && !running && !maintenance);
 
@@ -104,16 +103,20 @@ export function PlayCard() {
           <Notice tone="warning">{t("home.crashed", { code: game.lastExit.code ?? "?" })}</Notice>
         ) : null}
 
-        <LaunchProgress />
-
-        {running ? (
+        {/* The footer is one block that follows the state — the action row,
+            the launch progress, or the running game — never the three stacked.
+            A play button greyed out under a progress bar says nothing the bar
+            does not, and every extra row was one more reason to scroll. */}
+        {busy ? (
+          <LaunchProgress />
+        ) : running ? (
           <div className="card-inset p-4 flex items-center gap-3 animate-fade-in">
             <span className="status-dot status-dot-online" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
                 {t("home.running")}
               </p>
-              <p className="text-[11px]" style={{ color: "var(--text-meta)" }}>
+              <p className="text-[11px] truncate" style={{ color: "var(--text-meta)" }}>
                 {running.instanceName || selected?.name}
                 {running.startedAt ? ` · ${t("home.runningSince")} ${formatDateTime(running.startedAt)}` : ""}
                 {running.pid ? ` · PID ${running.pid}` : ""}
@@ -123,39 +126,36 @@ export function PlayCard() {
               {t("home.stop")}
             </Button>
           </div>
-        ) : null}
-
-        <div className="flex flex-wrap items-center gap-3 pt-1">
-          {!account ? (
-            <Button variant="primary" size="xl" icon="person_add" onClick={() => openLogin(true)}>
-              {t("accounts.add")}
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              size="xl"
-              icon={runningHere ? "sports_esports" : "play_arrow"}
-              disabled={!canPlay}
-              loading={busy && game.mode === "launch"}
-              onClick={() => selected && void launch(selected.id)}
-              className={canPlay ? "animate-pulse-glow" : ""}
-            >
-              {runningHere ? t("home.running") : t("common.play")}
-            </Button>
-          )}
-          {selected ? (
-            <Button
-              variant="secondary"
-              size="lg"
-              icon={status?.installed ? "verified" : "download"}
-              disabled={busy || Boolean(running)}
-              loading={busy && game.mode === "install"}
-              onClick={() => void install(selected.id)}
-            >
-              {status?.installed ? t("common.verify") : t("common.install")}
-            </Button>
-          ) : null}
-        </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            {!account ? (
+              <Button variant="primary" size="xl" icon="person_add" onClick={() => openLogin(true)}>
+                {t("accounts.add")}
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                size="xl"
+                icon="play_arrow"
+                disabled={!canPlay}
+                onClick={() => selected && void launch(selected.id)}
+                className={canPlay ? "animate-pulse-glow" : ""}
+              >
+                {t("common.play")}
+              </Button>
+            )}
+            {selected ? (
+              <Button
+                variant="secondary"
+                size="lg"
+                icon={status?.installed ? "verified" : "download"}
+                onClick={() => void install(selected.id)}
+              >
+                {status?.installed ? t("common.verify") : t("common.install")}
+              </Button>
+            ) : null}
+          </div>
+        )}
       </Card>
       {editing ? <InstanceSettingsModal instance={editing} onClose={() => setEditing(null)} /> : null}
     </>

@@ -122,6 +122,21 @@ export interface RemoteBrand {
   iconUrl: string | null;
 }
 
+/** Habillage publié par le panel (`GET /theme`). */
+export interface RemoteTheme {
+  schemaVersion: number;
+  /**
+   * Mise en page composée par le propriétaire, `null` s'il n'en a pas.
+   *
+   * Typé `unknown` ici : son schéma vit dans `src/theme/schema.ts`, copie à
+   * l'identique de celui du panel. Le faire transiter par ce fichier de DTO
+   * obligerait à le dupliquer une fois de plus.
+   */
+  document: unknown;
+  /** Variables CSS calculées par le panel, repli du calcul local. */
+  variables: Record<string, string>;
+}
+
 export interface RemoteConfig {
   maintenance: boolean;
   maintenanceMessage: string | null;
@@ -132,6 +147,8 @@ export interface RemoteConfig {
   modules: Record<string, unknown>;
   brand: RemoteBrand | null;
   yggdrasil: string | null;
+  /** Couleur d'accentuation, appliquée même avant l'arrivée du thème. */
+  accentColor: string | null;
   extra: Record<string, unknown>;
 }
 
@@ -172,6 +189,7 @@ export interface RemoteSnapshot {
   instances: Instance[];
   articles: Article[];
   links: Link[];
+  theme: RemoteTheme | null;
   partialErrors: { part: string; code: string; message: string }[];
   fetchedAt: number;
   stale: boolean;

@@ -6,7 +6,7 @@
 import { useEffect, useRef } from "react";
 import { SkinViewer, WalkingAnimation } from "skinview3d";
 
-import { defaultSkinCanvas } from "../../lib/defaultSkin";
+import { DEFAULT_SKIN_URL } from "../../lib/defaultSkin";
 
 export type ModelName = "auto" | "default" | "slim";
 
@@ -89,10 +89,10 @@ export function SkinViewer3D({ skin, cape, model, autoRotate, zoom, className = 
     const options = { model: model === "auto" ? ("auto-detect" as const) : model };
     if (skin) {
       instance.loadSkin(skin, options).catch(() => {
-        instance.loadSkin(defaultSkinCanvas(), { model: "default" });
+        void instance.loadSkin(DEFAULT_SKIN_URL, { model: "default" });
       });
     } else {
-      instance.loadSkin(defaultSkinCanvas(), { model: model === "auto" ? "default" : model });
+      void instance.loadSkin(DEFAULT_SKIN_URL, { model: model === "auto" ? "default" : model });
     }
   }, [skin, model]);
 

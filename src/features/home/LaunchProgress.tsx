@@ -15,7 +15,14 @@ const STAGE_LABELS: Record<string, string> = {
   starting: "launch.starting",
 };
 
-/** Install/launch progress: stage, bytes, speed, ETA, current element. */
+/**
+ * Install/launch progress: stage, bytes, speed, ETA, current element.
+ *
+ * Takes the place of the action row in the play card while something runs:
+ * a progress panel stacked on top of greyed-out buttons made the card grow
+ * until it scrolled inside itself, which is the one thing a launch must never
+ * look like.
+ */
 export function LaunchProgress() {
   const { game } = useAppState();
   const { cancelInstall } = useActions();
@@ -32,7 +39,7 @@ export function LaunchProgress() {
   return (
     <div className="card-inset p-4 space-y-3 animate-fade-in">
       <div className="flex items-center gap-3">
-        <Icon name="autorenew" size={18} spin style={{ color: "#34d399" }} />
+        <Icon name="autorenew" size={18} spin style={{ color: "var(--accent-400)" }} />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>
             {t(STAGE_LABELS[stage] ?? "launch.preparing")}

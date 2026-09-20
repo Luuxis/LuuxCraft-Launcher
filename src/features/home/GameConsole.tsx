@@ -50,7 +50,7 @@ export function GameConsole() {
                   key={line.id}
                   className={`whitespace-pre-wrap break-all ${line.stream === "stderr" ? "line-stderr" : /\b(WARN|ERROR|Exception)\b/.test(line.text) ? "line-warn" : ""}`}
                 >
-                  {line.stream === "launcher" ? <span style={{ color: "#34d399" }}>[launcher] </span> : null}
+                  {line.stream === "launcher" ? <span style={{ color: "var(--accent-400)" }}>[launcher] </span> : null}
                   {line.text}
                 </div>
               ))

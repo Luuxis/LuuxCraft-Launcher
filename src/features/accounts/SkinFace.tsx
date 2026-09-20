@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { defaultSkinCanvas, faceFromSkin } from "../../lib/defaultSkin";
+import { DEFAULT_SKIN_URL, faceFromSkin } from "../../lib/defaultSkin";
 import { ipc } from "../../lib/ipc";
 import type { AccountSummary } from "../../lib/types";
 import { initials } from "../../lib/format";
@@ -27,7 +27,7 @@ export function SkinFace({ account, size = 40, className = "" }: SkinFaceProps) 
     }
     (async () => {
       try {
-        let source: string | HTMLCanvasElement = defaultSkinCanvas();
+        let source: string = DEFAULT_SKIN_URL;
         if (account.skinDataUrl) source = account.skinDataUrl;
         else if (account.skinUrl) {
           const data = await ipc.skinGet(account.uuid, false);
@@ -49,7 +49,7 @@ export function SkinFace({ account, size = 40, className = "" }: SkinFaceProps) 
     return (
       <span
         className={`inline-flex items-center justify-center font-black text-xs shrink-0 ${className}`}
-        style={{ width: size, height: size, background: "var(--grad-brand)", color: "#051a0e", borderRadius: 8 }}
+        style={{ width: size, height: size, background: "var(--grad-brand)", color: "var(--on-brand)", borderRadius: 8 }}
         aria-hidden="true"
       >
         {initials(account.name)}

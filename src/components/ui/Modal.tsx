@@ -18,20 +18,38 @@ interface ModalProps {
   children: ReactNode;
   /** Prevent closing with Escape / overlay (e.g. while a flow is pending). */
   locked?: boolean;
+  /**
+   * Renders the body alone, without overlay, header or close button.
+   *
+   * Used when a theme places this dialog itself: the frame, the title and the
+   * backdrop then belong to the theme document, and drawing our own on top
+   * would give the player two stacked dialogs.
+   */
+  inline?: boolean;
 }
 
 /** Modal of the charter (§9.8): left brand bar, two radial halos, iconised header. */
-export function Modal({ open, onClose, title, subtitle, icon = "edit_square", size = "md", footer, children, locked = false }: ModalProps) {
+export function Modal({ open, onClose, title, subtitle, icon = "edit_square", size = "md", footer, children, locked = false, inline = false }: ModalProps) {
   useEffect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !locked) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, locked, onClose]);
+  }, [open, inline, locked, onClose]);
 
   if (!open) return null;
+
+  if (inline) {
+    return (
+      <div className="space-y-5" role="group" aria-label={title}>
+        {children}
+        {footer ? <div className="flex items-center justify-end gap-3 flex-wrap pt-2">{footer}</div> : null}
+      </div>
+    );
+  }
+
   return (
     <div
       className="modal-overlay"

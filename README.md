@@ -135,9 +135,23 @@ Routes consommées (mêmes routes que les launchers de référence LuuxCraft) :
   | `socialLinks` | Liens affichés sur l'accueil | aucun lien |
   | `modules` (ou `features`) | Bascules par module : `news`, `skins`, `links`, `serverStatus`, `accounts`, `settings` | tout est affiché |
   | `brand` | Nom, wordmark (`prefix` + `suffix` en dégradé), sous-titre, site | identité intégrée (`src/config/brand.ts`) |
+  | `accentColor` | Couleur d'accentuation, appliquée avant même l'arrivée du thème | vert du moteur |
   | `yggdrasil` | Serveur Yggdrasil/authlib-injector, ajoute l'onglet de connexion | méthode non proposée |
 
   Tout champ inconnu est conservé dans `extra`, rien ne casse s'il en manque un.
+- `GET {baseUrl}/user/{userId}/theme` — habillage composé par le propriétaire :
+
+  | Champ | Rôle | Sans lui |
+  |---|---|---|
+  | `variables` | Variables CSS calculées par le panel (rampe d'accentuation, surfaces, textes, rayons, halos) | couleurs du moteur |
+  | `document` | Mise en page complète, écran par écran, composée dans l'éditeur du panel | disposition intégrée |
+  | `schemaVersion` | Version du schéma du document | document ignoré |
+
+  `document: null` n'est pas une erreur : c'est le cas normal d'un client qui n'a
+  réglé que sa couleur. Un document d'un schéma que ce binaire ne connaît pas est
+  ignoré de la même façon. Dans les deux cas le launcher garde sa mise en page et
+  reste pleinement utilisable — un thème ne peut que décorer, jamais casser.
+
 - `GET {baseUrl}/user/{userId}/articles?limit=N` — actualités (`title`, `content` HTML,
   `author`, `publish_date`, image/lien/ordre si présents).
 - `GET {baseUrl}/user/{userId}/instances` — instances (`name`, `url` des fichiers, `loader`,
@@ -172,9 +186,34 @@ src/
   store/AppStore.tsx        état global + actions (IPC typé dans lib/ipc.ts)
   features/*                accueil (jouer + instance), comptes, skins (skinview3d/three), paramètres
   components/*              design system (charte) : boutons, cartes, modales, formulaires…
-  styles/index.css          tokens Tailwind v4 + composants de la charte, thème clair
+  theme/                    thème publié par le panel : variables, rendu du document, composants liés
+  styles/index.css          tokens Tailwind v4 branchés sur les variables du thème
   i18n/fr.ts                textes UI et messages d'erreur par code
 ```
+
+### Thème
+
+Aucune couleur de marque n'est écrite en dur dans la feuille de style : tout passe par des
+variables posées sur `:root` au démarrage, à partir du thème du client. Les valeurs présentes
+dans `styles/index.css` sont les **défauts du moteur**, visibles le temps d'un aller-retour avec
+le panel et conservés s'il ne répond jamais.
+
+`theme/color.ts`, `theme/tokens.ts`, `theme/schema.ts` et `theme/css.ts` sont des **copies à
+l'identique** des fichiers du panel (`src/lib/launcher-theme/`). C'est ce qui garantit que
+l'aperçu de l'éditeur et le rendu réel produisent le même pixel ; un test du panel échoue si les
+deux copies divergent. **Toute modification de l'un doit être reportée dans l'autre.**
+
+Quand le propriétaire a composé une mise en page, `theme/ThemedScreen.tsx` la rend et les
+composants liés (`theme/widgets.tsx`) y injectent les données réelles — instances, comptes,
+actualités, progression. Le thème décide de l'apparence, jamais du contenu ni du comportement.
+Dans un cadre en disposition automatique, un composant « ajusté au contenu » se rend dans le
+flux et donne sa hauteur au nœud : c'est ainsi que la carte de lancement grandit pendant un
+téléchargement au lieu de défiler.
+
+La barre de titre (`components/layout/TitleBar.tsx`, et le composant `title-bar` des thèmes)
+place les boutons de fenêtre selon le système : feux à gauche sur macOS, symboles à droite
+ailleurs (`lib/platform.ts`). Le joueur sans skin connu est Steve (`assets/steve.png`), la même
+planche que le panel sert à son éditeur.
 
 ## Développement
 

@@ -50,7 +50,7 @@ export function Sidebar() {
                 <Icon name={item.icon} size={20} />
                 <span className="flex-1">{t(item.label)}</span>
                 {item.id === "home" && game.running ? (
-                  <span className="w-2 h-2 rounded-full bg-brand-500 shadow-[0_0_8px_#22c55e] animate-pulse" aria-hidden="true" />
+                  <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "var(--accent-500)", boxShadow: "0 0 8px var(--accent-500)" }} aria-hidden="true" />
                 ) : null}
               </button>
             </li>
@@ -74,7 +74,12 @@ export function Sidebar() {
               </span>
             </span>
             <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${account.needsReauth ? "bg-gold-500 shadow-[0_0_6px_#f59e0b]" : "bg-brand-500 shadow-[0_0_6px_#22c55e]"}`}
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={
+                account.needsReauth
+                  ? { background: "var(--warning-500)", boxShadow: "0 0 6px var(--warning-500)" }
+                  : { background: "var(--accent-500)", boxShadow: "0 0 6px var(--accent-500)" }
+              }
               aria-hidden="true"
             />
           </button>

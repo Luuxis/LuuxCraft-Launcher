@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub use client::LuuxCraftApi;
-pub use models::{Article, AuthMode, Instance, Link, RemoteConfig};
+pub use models::{Article, AuthMode, Instance, Link, RemoteConfig, RemoteTheme};
 
 /// Everything the frontend needs from the panel, fetched in one go.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +24,10 @@ pub struct RemoteSnapshot {
     pub articles: Vec<Article>,
     /// Panel links, or the central configuration fallback when it has none.
     pub links: Vec<Link>,
+    /// Habillage publié par le propriétaire. Absent, l'interface garde sa
+    /// mise en page et ses couleurs intégrées.
+    #[serde(default)]
+    pub theme: Option<RemoteTheme>,
     /// Errors of the optional parts (articles, instances) that did not block.
     pub partial_errors: Vec<PartialError>,
     /// Unix timestamp (seconds) of the fetch.
@@ -52,8 +56,15 @@ impl RemoteSnapshot {
 pub async fn fetch_snapshot(state: &AppState) -> AppResult<RemoteSnapshot> {
     let api = state.api();
     let limit = state.config.news.limit;
-    let (config, instances, articles) =
-        tokio::join!(api.config(), api.instances(), api.articles(limit));
+    // Les quatre partent ensemble : le thème n'est pas plus lent que le reste,
+    // et l'enchaîner après la configuration retarderait la première image de
+    // tout un aller-retour.
+    let (config, instances, articles, theme) = tokio::join!(
+        api.config(),
+        api.instances(),
+        api.articles(limit),
+        api.theme()
+    );
 
     let config = match config {
         Ok(config) => config,
@@ -102,6 +113,21 @@ pub async fn fetch_snapshot(state: &AppState) -> AppResult<RemoteSnapshot> {
         }
     };
 
+    // Un thème injoignable n'est pas une panne : l'interface retombe sur sa
+    // mise en page intégrée, et sur l'instantané en cache si l'on en a un.
+    let theme = match theme {
+        Ok(theme) => Some(theme),
+        Err(error) => {
+            log::warn!("panel theme unavailable: {error}");
+            partial_errors.push(PartialError {
+                part: "theme".into(),
+                code: error.code.to_owned(),
+                message: error.message,
+            });
+            state.cached_snapshot().and_then(|cached| cached.theme)
+        }
+    };
+
     // The panel is the only source of links (`socialLinks`).
     let links = config.links.clone();
 
@@ -110,6 +136,7 @@ pub async fn fetch_snapshot(state: &AppState) -> AppResult<RemoteSnapshot> {
         instances,
         articles,
         links,
+        theme,
         partial_errors,
         fetched_at: crate::util::unix_now(),
         stale: false,
@@ -118,11 +145,16 @@ pub async fn fetch_snapshot(state: &AppState) -> AppResult<RemoteSnapshot> {
     state.persist_snapshot(&snapshot);
     state.remember_data_directory(snapshot.config.data_directory.as_deref());
     log::info!(
-        "panel snapshot: {} instance(s), {} article(s), auth {:?}, maintenance {}",
+        "panel snapshot: {} instance(s), {} article(s), auth {:?}, maintenance {}, theme {}",
         snapshot.instances.len(),
         snapshot.articles.len(),
         snapshot.config.auth,
-        snapshot.config.maintenance
+        snapshot.config.maintenance,
+        match snapshot.theme.as_ref() {
+            Some(theme) if theme.document.is_some() => "custom layout",
+            Some(_) => "colours only",
+            None => "built-in",
+        }
     );
     Ok(snapshot)
 }

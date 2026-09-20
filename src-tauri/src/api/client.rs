@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::models::{ApiFailure, Article, Instance, RemoteConfig};
+use super::models::{ApiFailure, Article, Instance, RemoteConfig, RemoteTheme};
 use crate::config::LauncherConfig;
 use crate::error::{AppError, AppResult};
 
@@ -45,6 +45,18 @@ impl LuuxCraftApi {
             .get_json(&format!("{}/instances", self.base_url))
             .await?;
         Instance::list_from_value(value).map_err(|reason| AppError::new("api_invalid", reason))
+    }
+
+    /// Thème du launcher : variables de couleur, et mise en page si le
+    /// propriétaire en a composé une.
+    ///
+    /// Le document n'est pas interprété ici. Son schéma vit côté panel et son
+    /// rendu côté interface ; le traduire en types Rust obligerait à tenir une
+    /// troisième copie du schéma, qui dériverait au premier calque ajouté.
+    /// Le moteur se contente de le transporter.
+    pub async fn theme(&self) -> AppResult<RemoteTheme> {
+        let value = self.get_json(&format!("{}/theme", self.base_url)).await?;
+        Ok(RemoteTheme::from_value(value))
     }
 
     async fn get_json(&self, url: &str) -> AppResult<Value> {

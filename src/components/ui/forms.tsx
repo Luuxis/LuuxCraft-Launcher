@@ -339,9 +339,9 @@ export function OptionCard({ checked, onSelect, icon, title, description, disabl
       <span
         className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
         style={{
-          background: checked ? "rgba(34,197,94,0.15)" : "var(--bg-secondary)",
-          border: `1px solid ${checked ? "rgba(34,197,94,0.35)" : "var(--border)"}`,
-          color: checked ? "#34d399" : "var(--text-meta)",
+          background: checked ? "color-mix(in srgb, var(--accent-500) 15%, transparent)" : "var(--bg-secondary)",
+          border: `1px solid ${checked ? "color-mix(in srgb, var(--accent-500) 35%, transparent)" : "var(--border)"}`,
+          color: checked ? "var(--accent-400)" : "var(--text-meta)",
         }}
       >
         <Icon name={icon} size={18} />
@@ -361,7 +361,7 @@ export function OptionCard({ checked, onSelect, icon, title, description, disabl
         style={{
           borderColor: checked ? "var(--brand-primary)" : "var(--border)",
           background: checked ? "var(--brand-primary)" : "transparent",
-          color: "#051a0e",
+          color: "var(--on-brand)",
         }}
       >
         {checked ? <Icon name="check" size={14} /> : null}

@@ -21,9 +21,13 @@ type Method = "microsoft" | "azauth" | "offline" | "yggdrasil";
 interface LoginModalProps {
   open: boolean;
   onClose: () => void;
+  /** Rendered inside a frame placed by the theme, without our own dialog chrome. */
+  inline?: boolean;
+  title?: string;
+  subtitle?: string;
 }
 
-export function LoginModal({ open, onClose }: LoginModalProps) {
+export function LoginModal({ open, onClose, inline = false, title, subtitle }: LoginModalProps) {
   const { accountAdded } = useActions();
   const [methods, setMethods] = useState<AuthMethods | null>(null);
   const [methodsError, setMethodsError] = useState<AppError | null>(null);
@@ -150,7 +154,15 @@ export function LoginModal({ open, onClose }: LoginModalProps) {
   const availableTabs = tabs.filter((tab) => tab.available);
 
   return (
-    <Modal open={open} onClose={close} title={t("login.title")} subtitle={t("login.subtitle")} icon="login" locked={pending && method !== "microsoft"}>
+    <Modal
+      open={open}
+      onClose={close}
+      inline={inline}
+      title={title ?? t("login.title")}
+      subtitle={subtitle ?? t("login.subtitle")}
+      icon="login"
+      locked={pending && method !== "microsoft"}
+    >
       {methodsError ? <Notice tone="error">{describeError(methodsError)}</Notice> : null}
       {!methods && !methodsError ? (
         <div className="space-y-3">
@@ -177,7 +189,7 @@ export function LoginModal({ open, onClose }: LoginModalProps) {
                 setOtpRequired(false);
               }}
             >
-              <Icon name={tab.icon} size={22} style={{ color: method === tab.id ? "#34d399" : "var(--text-meta)" }} />
+              <Icon name={tab.icon} size={22} style={{ color: method === tab.id ? "var(--accent-400)" : "var(--text-meta)" }} />
               <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
                 {tab.label}
               </span>
